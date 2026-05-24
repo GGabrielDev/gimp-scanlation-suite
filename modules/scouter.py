@@ -88,8 +88,9 @@ def nms(boxes, confidences, threshold):
 
 def _normalize_yolo_predictions(outputs):
     """
-    Normalize common YOLO ONNX output layouts to a 2D array of shape (N, 6)
-    with columns [x_center, y_center, w, h, objectness, class_score].
+    Normalize common YOLO ONNX output layouts to a 2D array of shape (N, C),
+    where columns are:
+      [x_center, y_center, w, h, objectness, class_0, class_1, ...]
     """
     for i, out in enumerate(outputs):
         sys.stderr.write(f"[Koharu Scouter] output[{i}] shape={getattr(out, 'shape', None)}\n")
@@ -104,9 +105,12 @@ def _normalize_yolo_predictions(outputs):
             if preds.ndim != 2:
                 continue
 
-            if preds.shape[1] == 6:
+            # Already (N, C)
+            if preds.shape[1] >= 6:
                 return preds
-            if preds.shape[0] == 6:
+
+            # Transpose from (C, N) to (N, C)
+            if preds.shape[0] >= 6:
                 return preds.T
 
     predictions = outputs[0]
@@ -177,9 +181,18 @@ def detect_text_bubbles(layer, confidence_threshold=0.25, nms_threshold=0.5):
     preds = _normalize_yolo_predictions(outputs)
 
     # 4. Filter predictions by confidence threshold
-    # Coordinates mapping: x_center, y_center, w, h, objectness, class_score
+    # Coordinates mapping:
+    # x_center, y_center, w, h, objectness, class scores...
+    if preds.shape[1] < 6:
+        raise ValueError(f"Detector predictions have too few columns: {preds.shape}")
+
     obj_conf = preds[:, 4]
-    class_conf = preds[:, 5]
+
+    if preds.shape[1] == 6:
+        class_conf = preds[:, 5]
+    else:
+        class_conf = np.max(preds[:, 5:], axis=1)
+
     confidences = obj_conf * class_conf
 
     mask = confidences >= confidence_threshold
