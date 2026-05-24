@@ -267,21 +267,21 @@ class GimpScanlationSuite(Gimp.PlugIn):
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
         # Initialize progress bar to prevent UI freeze
-        Gimp.Progress.init("Running Koharu Scouter ONNX Model...")
+        Gimp.progress_init("Running Koharu Scouter ONNX Model...")
         while GLib.MainContext.default().iteration(False):
             pass
 
         try:
             boxes = scouter.detect_text_bubbles(active_layer, confidence_threshold=confidence)
         except Exception as e:
-            Gimp.Progress.end()
+            Gimp.progress_end()
             # Route all exceptions/debug output to stderr to protect GIMP's wire protocol
             sys.stderr.write(f"[Koharu Detector] Inference error: {e}\n")
             Gimp.message(f"Inference failed. Check GIMP error logs.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
         if not boxes:
-            Gimp.Progress.end()
+            Gimp.progress_end()
             Gimp.message("No text bubbles detected.")
             return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
@@ -324,10 +324,10 @@ class GimpScanlationSuite(Gimp.PlugIn):
             else:
                 sys.stderr.write("[Koharu Detector] Failed to add path: API unsupported.\n")
                 
-            Gimp.Progress.end()
+            Gimp.progress_end()
             Gimp.message(f"Successfully generated paths for {len(boxes)} text bubbles.")
         except Exception as e:
-            Gimp.Progress.end()
+            Gimp.progress_end()
             sys.stderr.write(f"[Koharu Detector] Path creation failed: {e}\n")
             Gimp.message("Failed to generate path layers.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
