@@ -61,7 +61,7 @@ def nms(boxes, confidences, threshold):
     x2 = boxes[:, 2]
     y2 = boxes[:, 3]
 
-    areas = (x2 - x1) * (y2 - y1)
+    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
     order = confidences.argsort()[::-1]
 
     keep = []
@@ -118,29 +118,13 @@ def _normalize_yolo_predictions(outputs):
     raise ValueError(f"Unexpected detector output shape: {shape}")
 
 
-def detect_text_bubbles(layer, confidence_threshold=0.25, nms_threshold=0.5):
+def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_threshold, x_offset=0, y_offset=0):
     """
-    Extracts GeglBuffer pixel data, runs ONNX text-bubble detector,
-    and returns a list of bounding box coordinates [[xmin, ymin, xmax, ymax], ...].
+    Run detector on an RGB numpy image and return boxes/confidences mapped back
+    to the original image coordinate space with optional offsets.
     """
-    # 1. GeglBuffer extraction
-    buffer = layer.get_buffer()
-    rect = buffer.get_extent()
-    orig_w = rect.width
-    orig_h = rect.height
+    orig_h, orig_w, _ = img_np.shape
 
-    # Extract RGB u8 pixel data from GeglBuffer.
-    # Babl automatically converts transparent, grayscale, or RGBA layer pixels to raw RGB bytes.
-    raw_data = buffer.get(rect, 1.0, "RGB u8", Gegl.AbyssPolicy.NONE)
-    img_np = np.frombuffer(raw_data, dtype=np.uint8)
-    img_np = img_np.reshape((orig_h, orig_w, 3))
-
-    # Convert RGB array to high-contrast grayscale array using standard luminosity formula,
-    # then stack back to 3 channels to match model expectation.
-    gray_img = np.dot(img_np[..., :3], [0.2989, 0.5870, 0.1140]).astype(np.uint8)
-    img_np = np.stack((gray_img,) * 3, axis=-1)
-
-    # 2. Preprocessing
     image_size = 1024
     if orig_w >= orig_h:
         resized_w = image_size
@@ -152,90 +136,151 @@ def detect_text_bubbles(layer, confidence_threshold=0.25, nms_threshold=0.5):
     resized_w = max(1, resized_w)
     resized_h = max(1, resized_h)
 
-    # Resize keeping aspect ratio
     resized_img = resize_image(img_np, resized_w, resized_h)
 
-    # Pad bottom-right with zero (black background) to 1024x1024
     padded_img = np.zeros((image_size, image_size, 3), dtype=np.uint8)
     padded_img[0:resized_h, 0:resized_w, :] = resized_img
 
-    # Normalize to [0, 1] and permute to BCHW (1, 3, 1024, 1024)
     input_data = padded_img.astype(np.float32) / 255.0
     input_data = np.transpose(input_data, (2, 0, 1))
     input_data = np.expand_dims(input_data, axis=0)
 
-    # 3. Model path and session initialization
-    # Path is absolute under the active workspace models/ directory
-    model_path = os.path.expanduser("~/Projects/gimp-scanlation-suite/models/comic-text-detector.onnx")
-
-    if not os.path.exists(model_path):
-        # Log error to sys.stderr so as not to pollute GIMP wire protocol
-        sys.stderr.write(f"[Koharu Scouter] Model file not found at: {model_path}\n")
-        return []
-
-    session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-    input_name = session.get_inputs()[0].name
-
-    # Run the ONNX model
     outputs = session.run(None, {input_name: input_data})
     preds = _normalize_yolo_predictions(outputs)
 
-    # 4. Filter predictions by confidence threshold
-    # Coordinates mapping:
-    # x_center, y_center, w, h, objectness, class scores...
     if preds.shape[1] < 6:
         raise ValueError(f"Detector predictions have too few columns: {preds.shape}")
 
     obj_conf = preds[:, 4]
-
     if preds.shape[1] == 6:
         class_conf = preds[:, 5]
     else:
         class_conf = np.max(preds[:, 5:], axis=1)
 
     confidences = obj_conf * class_conf
-
     mask = confidences >= confidence_threshold
     valid_preds = preds[mask]
     valid_confs = confidences[mask]
 
     sys.stderr.write(
-        f"[Koharu Scouter] total_preds={len(preds)} valid_preds={len(valid_preds)} threshold={confidence_threshold:.2f}\n"
+        f"[Koharu Scouter] tile=({x_offset},{y_offset},{orig_w},{orig_h}) total_preds={len(preds)} valid_preds={len(valid_preds)} threshold={confidence_threshold:.2f}\n"
     )
 
     if len(valid_preds) == 0:
-        return []
+        return np.empty((0, 4), dtype=np.float32), np.empty((0,), dtype=np.float32)
 
     x_center = valid_preds[:, 0]
     y_center = valid_preds[:, 1]
     w = valid_preds[:, 2]
     h = valid_preds[:, 3]
 
-    # Scale coordinates back to original size (excluding padding margins)
     w_ratio = orig_w / resized_w
     h_ratio = orig_h / resized_h
 
-    # Bbox dilation of 1px matching the Rust pipeline
     bbox_dilation = 1.0
-    x1 = (x_center - w / 2.0) * w_ratio - bbox_dilation
-    x2 = (x_center + w / 2.0) * w_ratio + bbox_dilation
-    y1 = (y_center - h / 2.0) * h_ratio - bbox_dilation
-    y2 = (y_center + h / 2.0) * h_ratio + bbox_dilation
+    x1 = (x_center - w / 2.0) * w_ratio - bbox_dilation + x_offset
+    x2 = (x_center + w / 2.0) * w_ratio + bbox_dilation + x_offset
+    y1 = (y_center - h / 2.0) * h_ratio - bbox_dilation + y_offset
+    y2 = (y_center + h / 2.0) * h_ratio + bbox_dilation + y_offset
 
-    # Clamp coordinates to original image boundaries
-    x1 = np.clip(x1, 0, orig_w)
-    x2 = np.clip(x2, 0, orig_w)
-    y1 = np.clip(y1, 0, orig_h)
-    y2 = np.clip(y2, 0, orig_h)
+    boxes = np.column_stack([x1, y1, x2, y2]).astype(np.float32)
+    return boxes, valid_confs.astype(np.float32)
 
-    boxes = np.column_stack([x1, y1, x2, y2])
 
-    # 5. Non-Maximum Suppression
-    keep = nms(boxes, valid_confs, nms_threshold)
+def detect_text_bubbles(layer, confidence_threshold=0.22, nms_threshold=0.55):
+    """
+    Extracts GeglBuffer pixel data, runs ONNX text-bubble detector,
+    and returns a list of bounding box coordinates [[xmin, ymin, xmax, ymax], ...].
+    Uses full-image plus overlapping tiled inference to improve recall on large/stylized text.
+    """
+    buffer = layer.get_buffer()
+    rect = buffer.get_extent()
+    full_w = rect.width
+    full_h = rect.height
+
+    raw_data = buffer.get(rect, 1.0, "RGB u8", Gegl.AbyssPolicy.NONE)
+    img_np = np.frombuffer(raw_data, dtype=np.uint8)
+    img_np = img_np.reshape((full_h, full_w, 3))
+
+    model_path = os.path.expanduser("~/Projects/gimp-scanlation-suite/models/comic-text-detector.onnx")
+    if not os.path.exists(model_path):
+        sys.stderr.write(f"[Koharu Scouter] Model file not found at: {model_path}\n")
+        return []
+
+    session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+    input_name = session.get_inputs()[0].name
+
+    all_boxes = []
+    all_confs = []
+
+    # Pass 1: full image using RGB to preserve title/text styling cues.
+    boxes, confs = _run_model_on_image(
+        session,
+        input_name,
+        img_np,
+        confidence_threshold,
+        nms_threshold,
+        x_offset=0,
+        y_offset=0,
+    )
+    if len(boxes) > 0:
+        all_boxes.append(boxes)
+        all_confs.append(confs)
+
+    # Pass 2: overlapping 2x2 tiled inference for better recall on large or stylized text.
+    tile_w = max(full_w // 2 + full_w // 4, min(full_w, 1024))
+    tile_h = max(full_h // 2 + full_h // 4, min(full_h, 1024))
+    step_x = max(1, tile_w // 2)
+    step_y = max(1, tile_h // 2)
+
+    x_starts = sorted(set([0, max(0, full_w - tile_w)] + list(range(0, max(1, full_w - tile_w + 1), step_x))))
+    y_starts = sorted(set([0, max(0, full_h - tile_h)] + list(range(0, max(1, full_h - tile_h + 1), step_y))))
+
+    for y0 in y_starts:
+        for x0 in x_starts:
+            x1 = min(full_w, x0 + tile_w)
+            y1 = min(full_h, y0 + tile_h)
+            tile = img_np[y0:y1, x0:x1, :]
+
+            # Skip tiles that are effectively the full image to avoid duplicate work.
+            if x0 == 0 and y0 == 0 and tile.shape[1] == full_w and tile.shape[0] == full_h:
+                continue
+
+            tile_boxes, tile_confs = _run_model_on_image(
+                session,
+                input_name,
+                tile,
+                confidence_threshold,
+                nms_threshold,
+                x_offset=x0,
+                y_offset=y0,
+            )
+            if len(tile_boxes) > 0:
+                all_boxes.append(tile_boxes)
+                all_confs.append(tile_confs)
+
+    if not all_boxes:
+        return []
+
+    boxes = np.vstack(all_boxes)
+    confidences = np.concatenate(all_confs)
+
+    boxes[:, 0] = np.clip(boxes[:, 0], 0, full_w)
+    boxes[:, 2] = np.clip(boxes[:, 2], 0, full_w)
+    boxes[:, 1] = np.clip(boxes[:, 1], 0, full_h)
+    boxes[:, 3] = np.clip(boxes[:, 3], 0, full_h)
+
+    valid_geom = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+    boxes = boxes[valid_geom]
+    confidences = confidences[valid_geom]
+
+    if len(boxes) == 0:
+        return []
+
+    keep = nms(boxes, confidences, nms_threshold)
     sys.stderr.write(
-        f"[Koharu Scouter] kept_after_nms={len(keep)} nms_threshold={nms_threshold:.2f}\n"
+        f"[Koharu Scouter] merged_boxes={len(boxes)} kept_after_nms={len(keep)} nms_threshold={nms_threshold:.2f}\n"
     )
     final_boxes = boxes[keep]
 
-    # Convert numpy float coordinates to python float lists
     return final_boxes.tolist()
