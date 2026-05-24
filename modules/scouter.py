@@ -103,6 +103,11 @@ def detect_text_bubbles(layer, confidence_threshold=0.4, nms_threshold=0.35):
     img_np = np.frombuffer(raw_data, dtype=np.uint8)
     img_np = img_np.reshape((orig_h, orig_w, 3))
     
+    # Convert RGB array to high-contrast grayscale array using standard luminosity formula,
+    # then stack back to 3 channels to match model expectation.
+    gray_img = np.dot(img_np[..., :3], [0.2989, 0.5870, 0.1140]).astype(np.uint8)
+    img_np = np.stack((gray_img,) * 3, axis=-1)
+    
     # 2. Preprocessing
     image_size = 1024
     if orig_w >= orig_h:
