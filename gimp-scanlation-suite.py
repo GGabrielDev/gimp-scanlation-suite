@@ -648,7 +648,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             Gimp.message("Error: Ensemble OCR mode is only supported in Remote mode. Please start the dispatcher server and select Remote mode.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
-        Gimp.message(f"[Koharu OCR] Running in {inference_mode} mode using '{ocr_engine_param}' (Ensemble consensus={ensemble_consensus})...")
+        sys.stderr.write(f"[Koharu OCR] Running in {inference_mode} mode using '{ocr_engine_param}' (Ensemble consensus={ensemble_consensus})...\n")
 
         # 1. Verification of active layer and engine imports
         if not drawables:
@@ -693,7 +693,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             Gimp.message("Error: No paths/vectors found in the image. Please run detection first.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
-        Gimp.message(f"[Koharu OCR] Reading bounding boxes from path: '{target_path.get_name()}'...")
+        sys.stderr.write(f"[Koharu OCR] Reading bounding boxes from path: '{target_path.get_name()}'...\n")
 
         # 3. Retrieve strokes and parse coordinates
         bounding_boxes = []
@@ -771,7 +771,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             while GLib.MainContext.default().iteration(False):
                 pass
 
-            Gimp.message(f"[Koharu OCR] Fetching active layer pixel buffer ({full_w}x{full_h})...")
+            sys.stderr.write(f"[Koharu OCR] Fetching active layer pixel buffer ({full_w}x{full_h})...\n")
             raw_data = buffer.get(rect, 1.0, "RGB u8", Gegl.AbyssPolicy.NONE)
             img_np = np.frombuffer(raw_data, dtype=np.uint8).reshape((full_h, full_w, 3))
         except Exception as e:
@@ -812,7 +812,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             # Run local inference sequentially
             for i, crop in enumerate(crops):
                 box = valid_boxes[i]
-                Gimp.message(f"[Koharu OCR] Performing local OCR on region {i+1}/{len(crops)}...")
+                sys.stderr.write(f"[Koharu OCR] Performing local OCR on region {i+1}/{len(crops)}...\n")
                 while GLib.MainContext.default().iteration(False):
                     pass
                     
@@ -878,7 +878,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 except Exception as ex:
                     error_container.append(ex)
 
-            Gimp.message(f"[Koharu OCR] Sending {len(crops)} crops to remote dispatcher at {api_url}...")
+            sys.stderr.write(f"[Koharu OCR] Sending {len(crops)} crops to remote dispatcher at {api_url}...\n")
             Gimp.progress_init("Initializing consensus OCR...")
             
             t = threading.Thread(target=worker)
