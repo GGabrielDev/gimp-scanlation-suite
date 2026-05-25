@@ -665,13 +665,13 @@ def dispatch(request: BatchRequest):
                             ]
 
                         try:
-                            response = arbiter.create_chat_completion(messages=messages, temperature=0.2, max_tokens=1024)
+                            response = arbiter.create_chat_completion(messages=messages, temperature=0.2, max_tokens=2048)
                         except Exception as inf_err:
                             if _n_gpu_layers_used != 0:
                                 sys.stderr.write(f"[Server Dispatcher] Arbiter VLM GPU execution failed. Re-routing to CPU...\n")
                                 arbiter = get_or_load_model(arbiter_model_id, force_cpu=True)
                                 arbiter.reset()
-                                response = arbiter.create_chat_completion(messages=messages, temperature=0.2, max_tokens=1024)
+                                response = arbiter.create_chat_completion(messages=messages, temperature=0.2, max_tokens=2048)
                             else:
                                 raise inf_err
 
