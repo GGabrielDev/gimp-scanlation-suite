@@ -36,7 +36,8 @@ MODELS_CONFIG = {
         "local_name": "PaddleOCR-VL-1.5-Q4_K_M.gguf",
         "local_projector_name": "PaddleOCR-VL-1.5-mmproj.gguf",
         "handler_class": "Llava15ChatHandler",
-        "n_ctx": 4096
+        "n_ctx": 4096,
+        "n_gpu_layers": 0
     },
     "olmOCR2_Q4": {
         "repo": "bartowski/allenai_olmOCR-2-7B-1025-GGUF",
@@ -126,6 +127,10 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
     for other in other_models:
         unload_model(other)
         
+    cfg = MODELS_CONFIG[model_id]
+    if cfg.get("n_gpu_layers") == 0:
+        force_cpu = True
+
     # If forcing CPU and model was loaded on GPU, discard it
     if force_cpu and _n_gpu_layers_used != 0 and model_id in _loaded_models:
         unload_model(model_id)
@@ -133,7 +138,6 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
     if model_id in _loaded_models:
         return _loaded_models[model_id]
 
-    cfg = MODELS_CONFIG[model_id]
     from llama_cpp import Llama
     from modules import model_manager
 
