@@ -900,15 +900,22 @@ class GimpScanlationSuite(Gimp.PlugIn):
             sys.stderr.write(f"[Koharu OCR] Failed to create layer group: {group_err}\n")
             group_layer = None
 
-        # Resolve a valid Gimp.Font object
+        # Resolve a valid Gimp.Font object (preferring bold)
         font = None
         try:
             if hasattr(Gimp, "context_get_font"):
-                font = Gimp.context_get_font()
+                ctx_font = Gimp.context_get_font()
+                if ctx_font and hasattr(Gimp.Font, "get_by_name"):
+                    font_name = ctx_font.get_name()
+                    font = Gimp.Font.get_by_name(f"{font_name} Bold")
+                    if not font:
+                        font = ctx_font
             if not font and hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name"):
-                font = Gimp.Font.get_by_name("Sans-serif")
+                font = Gimp.Font.get_by_name("Sans-serif Bold")
                 if not font:
-                    font = Gimp.Font.get_by_name("Sans")
+                    font = Gimp.Font.get_by_name("Sans Bold")
+                if not font:
+                    font = Gimp.Font.get_by_name("Sans-serif")
         except Exception as font_err:
             sys.stderr.write(f"[Koharu OCR] Failed to resolve font: {font_err}\n")
 
@@ -922,7 +929,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             try:
                 if font:
                     # Create GIMP text layer (image, text, Gimp.Font object, size, unit)
-                    text_layer = Gimp.TextLayer.new(image, text, font, 18, Gimp.Unit.pixel())
+                    text_layer = Gimp.TextLayer.new(image, text, font, 32, Gimp.Unit.pixel())
                 else:
                     text_layer = None
                     sys.stderr.write(f"[Koharu OCR] Cannot create text layer: no font found.\n")
