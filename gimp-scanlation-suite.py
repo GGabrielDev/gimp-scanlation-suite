@@ -824,6 +824,18 @@ class GimpScanlationSuite(Gimp.PlugIn):
             sys.stderr.write(f"[Koharu OCR] Failed to create layer group: {group_err}\n")
             group_layer = None
 
+        # Resolve a valid Gimp.Font object
+        font = None
+        try:
+            if hasattr(Gimp, "context_get_font"):
+                font = Gimp.context_get_font()
+            if not font and hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name"):
+                font = Gimp.Font.get_by_name("Sans-serif")
+                if not font:
+                    font = Gimp.Font.get_by_name("Sans")
+        except Exception as font_err:
+            sys.stderr.write(f"[Koharu OCR] Failed to resolve font: {font_err}\n")
+
         # Insert text layers for each recognized box
         for i, text in enumerate(ocr_results):
             if not text.strip():
@@ -832,8 +844,13 @@ class GimpScanlationSuite(Gimp.PlugIn):
             xmin, ymin, xmax, ymax = box
             
             try:
-                # Create GIMP text layer (image, text, font name, size, unit)
-                text_layer = Gimp.TextLayer.new(image, text, "Sans-serif", 18, Gimp.Unit.pixel())
+                if font:
+                    # Create GIMP text layer (image, text, Gimp.Font object, size, unit)
+                    text_layer = Gimp.TextLayer.new(image, text, font, 18, Gimp.Unit.pixel())
+                else:
+                    text_layer = None
+                    sys.stderr.write(f"[Koharu OCR] Cannot create text layer: no font found.\n")
+
                 if text_layer:
                     # Set position/offsets
                     text_layer.set_offsets(int(xmin), int(ymin))
