@@ -370,14 +370,6 @@ def dispatch(request: BatchRequest):
         # Resolve prompt dictionary instructions
         from server.prompt_dictionary import PROMPT_DICTIONARY
         system_instruction = PROMPT_DICTIONARY.get(material_type, PROMPT_DICTIONARY["manga"])
-        # Adapt system instruction dynamically to support reasoning
-        system_instruction = system_instruction.replace(
-            "Output ONLY the finalized Japanese transcription. No explanations, no translations, no chatty remarks.",
-            "Analyze the candidates against the image. Provide step-by-step reasoning inside <thinking>...</thinking> tags, then output the finalized transcription inside <transcription>...</transcription> tags."
-        ).replace(
-            "Output ONLY the finalized transcription. No explanations, no translations, no chatty remarks.",
-            "Analyze the candidates against the image. Provide step-by-step reasoning inside <thinking>...</thinking> tags, then output the finalized transcription inside <transcription>...</transcription> tags."
-        )
 
         # Determine Arbiter VLM Model ID
         arbiter_model_id = model
