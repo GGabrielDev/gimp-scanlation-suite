@@ -46,9 +46,54 @@ except ImportError as e:
     sys.stderr.write(f"[Koharu Suite] Failed to import model_manager: {e}\n")
     model_manager = None
 
+try:
+    from modules import ocr_engine
+except ImportError as e:
+    sys.stderr.write(f"[Koharu Suite] Failed to import ocr_engine: {e}\n")
+    ocr_engine = None
+
+import numpy as np
+
+
+def clean_and_normalize_text(text, half_to_full=True):
+    """
+    Applies custom normalization rules to clean the recognized OCR text.
+    """
+    if not text:
+        return ""
+    
+    # 1. Strip whitespace
+    text = text.strip()
+    
+    # 2. Convert half-width ASCII to full-width CJK if enabled
+    if half_to_full:
+        chars = []
+        for c in text:
+            code = ord(c)
+            if code == 0x0020:
+                chars.append(chr(0x3000))
+            elif 0x0021 <= code <= 0x007E:
+                chars.append(chr(code + 0xfee0))
+            else:
+                chars.append(c)
+        text = "".join(chars)
+        
+    # 3. Collapse repetitive dots/punctuation
+    import re
+    text = re.sub(r'\.{2,}', '...', text)
+    text = re.sub(r'…+', '...', text)
+    text = re.sub(r'・{2,}', '...', text)
+    
+    # 4. Replace unicode ellipsis with standard dot notation
+    text = text.replace('…', '...')
+    
+    return text
+
+
 # We import additional GI modules for future use (e.g. Gegl for buffer manipulations)
 gi.require_version('Gegl', '0.4')
 from gi.repository import Gegl
+
 
 
 class GimpScanlationSuite(Gimp.PlugIn):
@@ -379,24 +424,6 @@ class GimpScanlationSuite(Gimp.PlugIn):
     def run_ocr(self, procedure, run_mode, image, drawables, config, run_data):
         """
         Executes Japanese Manga OCR (Optical Character Recognition).
-        
-        Rust ONNX Pipeline Equivalents:
-        1. Preprocessing:
-           - In `manga_ocr_onnx_inference.py`, each cropped text block is converted to grayscale,
-             then padded/resized to 224x224 using bilinear/area interpolation.
-           - Rescaled (division by 255.0) and normalized: (pixel - 0.5) / 0.5.
-           - Transposed from HWC (224, 224, 3) to CHW (3, 224, 224) and batched.
-        2. ONNX Model Inference (ViT-BERT EncoderDecoder):
-           - Encoder: Feed `pixel_values` to get `encoder_hidden_states`.
-           - Decoder: Loop generated token IDs up to maximum length.
-             In each iteration, run decoder session using `encoder_hidden_states` and `input_ids` (token_ids list).
-             Decoder output logits are processed to select the highest probability token (argmax/greedy).
-             Loop terminates when `eos_token` (ID=3) is encountered.
-        3. Postprocessing:
-           - Decodes token IDs to strings using tokenizer vocab dictionary.
-           - Strips whitespace.
-           - Normalises text with `jaconv` and custom rules: maps halfwidth ASCII to fullwidth CJK (`halfwidth_to_fullwidth`),
-             collapses repetitive dots/punctuation (`collapse_dots`), and replaces unicode ellipsis with standard dot notation.
         """
         GimpUi.init("gimp-scanlation-ocr")
 
@@ -430,11 +457,180 @@ class GimpScanlationSuite(Gimp.PlugIn):
             if not dialog.run():
                 return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
 
-        ocr_engine = config.get_property("ocr-engine")
+        ocr_engine_param = config.get_property("ocr-engine")
         half_to_full = config.get_property("half-to-full")
 
-        Gimp.message(f"[Koharu OCR] Running '{ocr_engine}' (half-to-full postprocess={half_to_full})...")
+        Gimp.message(f"[Koharu OCR] Running '{ocr_engine_param}' (half-to-full postprocess={half_to_full})...")
 
+        # 1. Verification of active layer and engine import
+        if not drawables:
+            Gimp.message("Error: No active drawable/layer selected.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+            
+        active_layer = drawables[0]
+
+        if ocr_engine is None:
+            Gimp.message("Error: OCR engine module could not be imported. Check venv dependencies.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        # Pump events
+        while GLib.MainContext.default().iteration(False):
+            pass
+
+        # 2. Locate the path layer (Detected Bubbles or fallback)
+        target_path = None
+        paths = image.get_paths()
+        for p in paths:
+            if p.get_name().startswith("Detected Bubbles"):
+                target_path = p
+                break
+                
+        if not target_path:
+            selected = image.get_selected_paths()
+            if selected:
+                target_path = selected[0]
+                
+        if not target_path and paths:
+            target_path = paths[0]
+            
+        if not target_path:
+            Gimp.message("Error: No paths/vectors found in the image. Please run detection first.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        Gimp.message(f"[Koharu OCR] Reading bounding boxes from path: '{target_path.get_name()}'...")
+
+        # 3. Retrieve strokes and parse coordinates
+        bounding_boxes = []
+        try:
+            strokes = target_path.get_strokes()
+            for stroke_id in strokes:
+                res = target_path.stroke_get_points(stroke_id)
+                coords = None
+                if isinstance(res, tuple) or isinstance(res, list):
+                    for item in res:
+                        if isinstance(item, list) or isinstance(item, tuple):
+                            if len(item) > 0 and isinstance(item[0], (int, float)):
+                                coords = list(item)
+                                break
+                    if coords is None:
+                        for item in res:
+                            if hasattr(item, "controlpoints"):
+                                coords = list(item.controlpoints)
+                                break
+                            elif hasattr(item, "points"):
+                                coords = list(item.points)
+                                break
+                else:
+                    if hasattr(res, "controlpoints"):
+                        coords = list(res.controlpoints)
+                    elif hasattr(res, "points"):
+                        coords = list(res.points)
+
+                if not coords:
+                    sys.stderr.write(f"[Koharu OCR] Skipping stroke {stroke_id}: no coordinates retrieved.\n")
+                    continue
+
+                x_coords = coords[0::2]
+                y_coords = coords[1::2]
+                if not x_coords or not y_coords:
+                    continue
+                    
+                xmin, xmax = min(x_coords), max(x_coords)
+                ymin, ymax = min(y_coords), max(y_coords)
+                
+                bounding_boxes.append((xmin, ymin, xmax, ymax))
+        except Exception as e:
+            sys.stderr.write(f"[Koharu OCR] Failed to parse paths/strokes: {e}\n")
+            Gimp.message("Failed to extract coordinates from paths.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        if not bounding_boxes:
+            Gimp.message("No valid text bounding boxes found in the selected path.")
+            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+        # Check if the model needs to be downloaded, showing progress
+        models_dir = os.path.expanduser("~/Projects/gimp-scanlation-suite/models")
+        gguf_path = os.path.join(models_dir, "PaddleOCR-VL-1.5-Q4_K_M.gguf")
+        projector_path = os.path.join(models_dir, "PaddleOCR-VL-1.5-mmproj.gguf")
+        
+        if not os.path.exists(gguf_path) or not os.path.exists(projector_path):
+            Gimp.message("[Koharu OCR] OCR model weights not found locally. Downloading PaddleOCR-VL-1.5 GGUF and vision projector (approx. 180MB total). This may take a moment...")
+            while GLib.MainContext.default().iteration(False):
+                pass
+
+        # 4. Extract pixel crops and run OCR
+        try:
+            buffer = active_layer.get_buffer()
+            rect = buffer.get_extent()
+            full_w = rect.width
+            full_h = rect.height
+
+            # Retrieve layer offsets
+            success, offset_x, offset_y = active_layer.get_offsets()
+            if not success:
+                offset_x, offset_y = 0, 0
+
+            # Pump events
+            while GLib.MainContext.default().iteration(False):
+                pass
+
+            Gimp.message(f"[Koharu OCR] Fetching active layer pixel buffer ({full_w}x{full_h})...")
+            raw_data = buffer.get(rect, 1.0, "RGB u8", Gegl.AbyssPolicy.NONE)
+            img_np = np.frombuffer(raw_data, dtype=np.uint8).reshape((full_h, full_w, 3))
+        except Exception as e:
+            sys.stderr.write(f"[Koharu OCR] Failed to read layer pixels: {e}\n")
+            Gimp.message("Failed to read active layer pixels.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        # Pump events
+        while GLib.MainContext.default().iteration(False):
+            pass
+
+        # We will loop over each bounding box, crop, and run OCR
+        ocr_results = []
+        for i, box in enumerate(bounding_boxes):
+            xmin, ymin, xmax, ymax = box
+            
+            # Map image-relative path coordinates to layer-relative buffer coordinates
+            x0 = int(np.clip(xmin - offset_x, 0, full_w))
+            x1 = int(np.clip(xmax - offset_x, 0, full_w))
+            y0 = int(np.clip(ymin - offset_y, 0, full_h))
+            y1 = int(np.clip(ymax - offset_y, 0, full_h))
+
+            if x1 <= x0 or y1 <= y0:
+                sys.stderr.write(f"[Koharu OCR] Box {i} has empty intersection with layer: {box}\n")
+                continue
+
+            crop = img_np[y0:y1, x0:x1, :]
+            
+            Gimp.message(f"[Koharu OCR] Performing OCR on region {len(ocr_results)+1}/{len(bounding_boxes)}...")
+            # Pump event loop
+            while GLib.MainContext.default().iteration(False):
+                pass
+                
+            try:
+                # Run OCR single crop
+                res_list = ocr_engine.extract_text_from_crops([crop])
+                raw_text = res_list[0] if res_list else ""
+                
+                # Apply custom normalization rules
+                normalized_text = clean_and_normalize_text(raw_text, half_to_full=half_to_full)
+                ocr_results.append(normalized_text)
+                
+                # Print result to stderr for logs
+                sys.stderr.write(f"[Koharu OCR] Region {i} bounding box {box} -> '{normalized_text}'\n")
+            except Exception as ocr_err:
+                sys.stderr.write(f"[Koharu OCR] Inference error on region {i}: {ocr_err}\n")
+                ocr_results.append("")
+            
+            # Pump events again
+            while GLib.MainContext.default().iteration(False):
+                pass
+
+        # Display summary message
+        non_empty = [t for t in ocr_results if t.strip()]
+        Gimp.message(f"OCR Complete! Processed {len(bounding_boxes)} regions, recognized {len(non_empty)} text blocks.")
+        
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
     def run_inpaint(self, procedure, run_mode, image, drawables, config, run_data):
