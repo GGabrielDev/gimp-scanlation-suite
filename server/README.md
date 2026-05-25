@@ -21,11 +21,25 @@ gimp-scanlation-suite/
 ## Installation Guide
 
 ### 1. Set Up Virtual Environment
-Create and activate a python virtual environment on your remote server:
+Create a python virtual environment on your remote server:
 ```bash
 python3 -m venv venv
-source venv/bin/activate
 ```
+
+Activate it depending on your current shell:
+
+- **For bash/zsh**:
+  ```bash
+  source venv/bin/activate
+  ```
+- **For fish**:
+  ```fish
+  source venv/bin/activate.fish
+  ```
+- **For csh/tcsh**:
+  ```csh
+  source venv/bin/activate.csh
+  ```
 
 ### 2. Install llama-cpp-python with GPU Acceleration
 To compile `llama-cpp-python` with hardware acceleration on your GPU, set the appropriate compile flags before installing.
