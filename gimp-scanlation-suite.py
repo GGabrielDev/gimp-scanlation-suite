@@ -40,6 +40,12 @@ except ImportError as e:
     sys.stderr.write(f"[Koharu Suite] Failed to import scouter: {e}\n")
     scouter = None
 
+try:
+    from modules import model_manager
+except ImportError as e:
+    sys.stderr.write(f"[Koharu Suite] Failed to import model_manager: {e}\n")
+    model_manager = None
+
 # We import additional GI modules for future use (e.g. Gegl for buffer manipulations)
 gi.require_version('Gegl', '0.4')
 from gi.repository import Gegl
@@ -78,8 +84,8 @@ class GimpScanlationSuite(Gimp.PlugIn):
             procedure.add_string_argument(
                 "detector-model",
                 "Detector Model",
-                "Model to run (e.g. anime-text-yolo, comic-text-bubble-detector)",
-                "anime-text-yolo",
+                "Model to run (e.g. ogkalu/comic-text-and-bubble-detector, PP-DocLayoutV3)",
+                "ogkalu/comic-text-and-bubble-detector",
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_double_argument(
@@ -261,17 +267,50 @@ class GimpScanlationSuite(Gimp.PlugIn):
             
         active_layer = drawables[0]
 
-        # 2. Call scouter to detect bounding boxes
-        if scouter is None:
-            Gimp.message("Error: Scouter module could not be imported. Check venv dependencies.")
+        # 2. Call model manager to ensure model exists
+        if model_manager is None:
+            Gimp.message("Error: Model manager module could not be imported. Check venv dependencies.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        # Map detector-model string to Hugging Face repo and filename
+        if "pp-doclayoutv3" in detector_model.lower():
+            model_id = "alex-dinh/PP-DocLayoutV3-ONNX"
+            filename = "PP-DocLayoutV3.onnx"
+        else:
+            model_id = "ogkalu/comic-text-and-bubble-detector"
+            filename = "detector.onnx"
 
         # Pump events to prevent UI freeze
         while GLib.MainContext.default().iteration(False):
             pass
 
+        # Check if the model needs to be downloaded
+        models_dir = os.path.expanduser("~/Projects/gimp-scanlation-suite/models")
+        local_path = os.path.join(models_dir, filename)
+        if not os.path.exists(local_path):
+            Gimp.message(f"[Koharu Detector] Downloading model '{model_id}/{filename}'... This may take a moment.")
+            # Pump events again
+            while GLib.MainContext.default().iteration(False):
+                pass
+
         try:
-            boxes = scouter.detect_text_bubbles(active_layer, confidence_threshold=confidence)
+            model_path = model_manager.ensure_model_exists(model_id, filename)
+        except Exception as e:
+            sys.stderr.write(f"[Koharu Detector] Model acquisition failed: {e}\n")
+            Gimp.message(f"Model download failed. Check GIMP error logs.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        # Pump events again
+        while GLib.MainContext.default().iteration(False):
+            pass
+
+        # 3. Call scouter to detect bounding boxes
+        if scouter is None:
+            Gimp.message("Error: Scouter module could not be imported. Check venv dependencies.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        try:
+            boxes = scouter.detect_text_bubbles(active_layer, model_path, confidence_threshold=confidence)
         except Exception as e:
             # Route all exceptions/debug output to stderr to protect GIMP's wire protocol
             sys.stderr.write(f"[Koharu Detector] Inference error: {e}\n")
