@@ -1,9 +1,11 @@
 import os
 import sys
 import gc
+import json
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 # Bootstrapping local venv site-packages so we can import llama-cpp and modules
 plugin_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -226,82 +228,97 @@ def dispatch(request: BatchRequest):
         if model not in MODELS_CONFIG:
             raise HTTPException(status_code=400, detail=f"Model ID '{model}' is not registered on the server.")
 
-        try:
-            llm = get_or_load_model(model)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to load model: {e}")
+        def event_generator():
+            global _n_gpu_layers_used
+            try:
+                llm = get_or_load_model(model)
+            except Exception as e:
+                yield json.dumps({"type": "progress", "percentage": 0.0, "message": f"Error: Failed to load model: {e}"}) + "\n"
+                raise RuntimeError(f"Failed to load model: {e}")
 
-        # Build OCR target language prompt if provided
-        options = request.options or {}
-        target_lang = options.get("target_language")
-        prompt = f"OCR: (Language: {target_lang})" if target_lang else "OCR:"
+            options = request.options or {}
+            target_lang = options.get("target_language")
+            prompt = f"OCR: (Language: {target_lang})" if target_lang else "OCR:"
 
-        sys.stderr.write(f"[Server Dispatcher] Processing single-model batch of size {len(request.batch_payload)} with prompt='{prompt}'...\n")
-        results = []
+            sys.stderr.write(f"[Server Dispatcher] Processing single-model batch of size {len(request.batch_payload)} with prompt='{prompt}'...\n")
+            results = []
+            N = len(request.batch_payload)
 
-        try:
-            for idx, item in enumerate(request.batch_payload):
-                img_str = item.get("image_data", "") if isinstance(item, dict) else str(item)
-                if not img_str:
-                    results.append("")
-                    continue
+            try:
+                for idx, item in enumerate(request.batch_payload):
+                    yield json.dumps({
+                        "type": "progress",
+                        "percentage": idx / N if N > 0 else 0.0,
+                        "message": f"Processing crop {idx+1}/{N}..."
+                    }) + "\n"
 
-                if not img_str.startswith("data:"):
-                    img_str = f"data:image/jpeg;base64,{img_str}"
+                    img_str = item.get("image_data", "") if isinstance(item, dict) else str(item)
+                    if not img_str:
+                        results.append("")
+                        continue
 
-                try:
-                    llm.reset()
-                except Exception as r_err:
-                    sys.stderr.write(f"[Server Dispatcher] LLM reset error: {r_err}\n")
+                    if not img_str.startswith("data:"):
+                        img_str = f"data:image/jpeg;base64,{img_str}"
 
-                if MODELS_CONFIG[model].get("handler_class") == "Llava15ChatHandler":
-                    user_text = f"You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing.\n\nPrompt: {prompt}"
-                    messages = [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "image_url", "image_url": {"url": img_str}},
-                                {"type": "text", "text": user_text}
-                            ]
-                        }
-                    ]
-                else:
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
-                        },
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "image_url", "image_url": {"url": img_str}},
-                                {"type": "text", "text": prompt}
-                            ]
-                        }
-                    ]
-
-                try:
                     try:
-                        response = llm.create_chat_completion(messages=messages)
-                    except Exception as inf_err:
-                        if _n_gpu_layers_used != 0:
-                            sys.stderr.write(f"[Server Dispatcher] GPU execution failed: {inf_err}. Re-routing to CPU...\n")
-                            llm = get_or_load_model(model, force_cpu=True)
-                            llm.reset()
+                        llm.reset()
+                    except Exception as r_err:
+                        sys.stderr.write(f"[Server Dispatcher] LLM reset error: {r_err}\n")
+
+                    if MODELS_CONFIG[model].get("handler_class") == "Llava15ChatHandler":
+                        user_text = f"You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing.\n\nPrompt: {prompt}"
+                        messages = [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "image_url", "image_url": {"url": img_str}},
+                                    {"type": "text", "text": user_text}
+                                ]
+                            }
+                        ]
+                    else:
+                        messages = [
+                            {
+                                "role": "system",
+                                "content": "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
+                            },
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "image_url", "image_url": {"url": img_str}},
+                                    {"type": "text", "text": prompt}
+                                ]
+                            }
+                        ]
+
+                    try:
+                        try:
                             response = llm.create_chat_completion(messages=messages)
-                        else:
-                            raise inf_err
+                        except Exception as inf_err:
+                            if _n_gpu_layers_used != 0:
+                                sys.stderr.write(f"[Server Dispatcher] GPU execution failed: {inf_err}. Re-routing to CPU...\n")
+                                llm = get_or_load_model(model, force_cpu=True)
+                                llm.reset()
+                                response = llm.create_chat_completion(messages=messages)
+                            else:
+                                raise inf_err
 
-                    text = response["choices"][0]["message"]["content"]
-                    results.append(text.strip())
-                except Exception as e:
-                    sys.stderr.write(f"[Server Dispatcher] Error during OCR inference on item {idx}: {e}\n")
-                    results.append("")
-        finally:
-            # Reclaim VRAM after finishing the batch run
-            unload_model(model)
+                        text = response["choices"][0]["message"]["content"]
+                        results.append(text.strip())
+                    except Exception as e:
+                        sys.stderr.write(f"[Server Dispatcher] Error during OCR inference on item {idx}: {e}\n")
+                        results.append("")
 
-        return results
+                yield json.dumps({
+                    "type": "progress",
+                    "percentage": 1.0,
+                    "message": "Completed OCR batch."
+                }) + "\n"
+                yield json.dumps({"type": "result", "results": results}) + "\n"
+            finally:
+                unload_model(model)
+
+        return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
     else:
         # ensemble_ocr Mixture of Experts pipeline
@@ -336,136 +353,187 @@ def dispatch(request: BatchRequest):
 
         sys.stderr.write(f"[Server Dispatcher] Starting Ensemble OCR Consensus on {len(crops_base64)} crops (Arbiter={arbiter_model_id}, Type={material_type})...\n")
 
-        # --- PASS 1: manga-ocr (PyTorch) ---
-        results_a = []
-        try:
-            mocr = get_or_load_model("manga_ocr")
-            for idx, img_b64 in enumerate(crops_base64):
-                if not img_b64:
-                    results_a.append("")
-                    continue
-                try:
-                    # Convert to PIL
-                    header, data = img_b64.split(",", 1)
-                    pil_img = Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
-                    text_a = mocr(pil_img)
-                    results_a.append(text_a.strip() if text_a else "")
-                except Exception as ex_a:
-                    sys.stderr.write(f"[Server Dispatcher] Expert A (manga-ocr) error on crop {idx}: {ex_a}\n")
-                    results_a.append("")
-        finally:
-            unload_model("manga_ocr")
+        def event_generator():
+            global _n_gpu_layers_used
+            N = len(crops_base64)
+            if N == 0:
+                yield json.dumps({"type": "progress", "percentage": 1.0, "message": "No crops to process."}) + "\n"
+                yield json.dumps({"type": "result", "results": []}) + "\n"
+                return
 
-        # --- PASS 2: PaddleOCR-VL-1.5 (llama.cpp) ---
-        results_b = []
-        try:
-            paddle = get_or_load_model("PaddleOCR")
-            for idx, img_b64 in enumerate(crops_base64):
-                if not img_b64:
-                    results_b.append("")
-                    continue
-                try:
-                    paddle.reset()
-                    messages = [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "image_url", "image_url": {"url": img_b64}},
+            # --- PASS 1: manga-ocr (PyTorch) ---
+            results_a = []
+            try:
+                yield json.dumps({
+                    "type": "progress",
+                    "percentage": 0.0,
+                    "message": "Initializing PyTorch manga-ocr..."
+                }) + "\n"
+                mocr = get_or_load_model("manga_ocr")
+                for idx, img_b64 in enumerate(crops_base64):
+                    pct = idx / (3 * N)
+                    yield json.dumps({
+                        "type": "progress",
+                        "percentage": pct,
+                        "message": f"Pass 1/3 (manga-ocr): Crop {idx+1}/{N}..."
+                    }) + "\n"
+                    
+                    if not img_b64:
+                        results_a.append("")
+                        continue
+                    try:
+                        # Convert to PIL
+                        header, data = img_b64.split(",", 1)
+                        pil_img = Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
+                        text_a = mocr(pil_img)
+                        results_a.append(text_a.strip() if text_a else "")
+                    except Exception as ex_a:
+                        sys.stderr.write(f"[Server Dispatcher] Expert A (manga-ocr) error on crop {idx}: {ex_a}\n")
+                        results_a.append("")
+            finally:
+                unload_model("manga_ocr")
+
+            # --- PASS 2: PaddleOCR-VL-1.5 (llama.cpp) ---
+            results_b = []
+            try:
+                yield json.dumps({
+                    "type": "progress",
+                    "percentage": N / (3 * N),
+                    "message": "Initializing PaddleOCR..."
+                }) + "\n"
+                paddle = get_or_load_model("PaddleOCR")
+                for idx, img_b64 in enumerate(crops_base64):
+                    pct = (N + idx) / (3 * N)
+                    yield json.dumps({
+                        "type": "progress",
+                        "percentage": pct,
+                        "message": f"Pass 2/3 (PaddleOCR): Crop {idx+1}/{N}..."
+                    }) + "\n"
+                    
+                    if not img_b64:
+                        results_b.append("")
+                        continue
+                    try:
+                        paddle.reset()
+                        messages = [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "image_url", "image_url": {"url": img_b64}},
+                                    {
+                                        "type": "text",
+                                        "text": "You are a precise Japanese OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not explain.\n\nPrompt: OCR:"
+                                    }
+                                ]
+                            }
+                        ]
+                        # Direct llama.cpp inference with CPU fallback
+                        try:
+                            response = paddle.create_chat_completion(messages=messages)
+                        except Exception as inf_err:
+                            if _n_gpu_layers_used != 0:
+                                sys.stderr.write(f"[Server Dispatcher] Expert B GPU failed. Re-routing to CPU...\n")
+                                paddle = get_or_load_model("PaddleOCR", force_cpu=True)
+                                paddle.reset()
+                                response = paddle.create_chat_completion(messages=messages)
+                            else:
+                                raise inf_err
+
+                        text_b = response["choices"][0]["message"]["content"]
+                        results_b.append(text_b.strip() if text_b else "")
+                    except Exception as ex_b:
+                        sys.stderr.write(f"[Server Dispatcher] Expert B (PaddleOCR) error on crop {idx}: {ex_b}\n")
+                        results_b.append("")
+            finally:
+                unload_model("PaddleOCR")
+
+            # --- PASS 3: Arbiter VLM Consensus ---
+            final_results = []
+            try:
+                yield json.dumps({
+                    "type": "progress",
+                    "percentage": (2 * N) / (3 * N),
+                    "message": f"Initializing Arbiter ({arbiter_model_id})..."
+                }) + "\n"
+                arbiter = get_or_load_model(arbiter_model_id)
+                for idx, img_b64 in enumerate(crops_base64):
+                    pct = (2 * N + idx) / (3 * N)
+                    yield json.dumps({
+                        "type": "progress",
+                        "percentage": pct,
+                        "message": f"Pass 3/3 (Arbiter VLM): Crop {idx+1}/{N}..."
+                    }) + "\n"
+                    
+                    if not img_b64:
+                        final_results.append("")
+                        continue
+                    
+                    result_a = results_a[idx]
+                    result_b = results_b[idx]
+
+                    try:
+                        arbiter.reset()
+                        
+                        user_prompt = (
+                            f"Expert OCR transcriptions candidates:\n"
+                            f"- Candidate A: {result_a}\n"
+                            f"- Candidate B: {result_b}\n\n"
+                            f"Source Language: {source_lang}\n"
+                            f"Target Language: {target_lang}\n\n"
+                            f"Verify against the image. Output ONLY the corrected final Japanese transcription. Do not explain, translate, or conversationalize."
+                        )
+
+                        if MODELS_CONFIG[arbiter_model_id].get("handler_class") == "Llava15ChatHandler":
+                            user_text = f"{system_instruction}\n\n{user_prompt}"
+                            messages = [
                                 {
-                                    "type": "text",
-                                    "text": "You are a precise Japanese OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not explain.\n\nPrompt: OCR:"
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "image_url", "image_url": {"url": img_b64}},
+                                        {"type": "text", "text": user_text}
+                                    ]
                                 }
                             ]
-                        }
-                    ]
-                    # Direct llama.cpp inference with CPU fallback
-                    try:
-                        response = paddle.create_chat_completion(messages=messages)
-                    except Exception as inf_err:
-                        if _n_gpu_layers_used != 0:
-                            sys.stderr.write(f"[Server Dispatcher] Expert B GPU failed. Re-routing to CPU...\n")
-                            paddle = get_or_load_model("PaddleOCR", force_cpu=True)
-                            paddle.reset()
-                            response = paddle.create_chat_completion(messages=messages)
                         else:
-                            raise inf_err
+                            messages = [
+                                {
+                                    "role": "system",
+                                    "content": system_instruction
+                                },
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "image_url", "image_url": {"url": img_b64}},
+                                        {"type": "text", "text": user_prompt}
+                                    ]
+                                }
+                            ]
 
-                    text_b = response["choices"][0]["message"]["content"]
-                    results_b.append(text_b.strip() if text_b else "")
-                except Exception as ex_b:
-                    sys.stderr.write(f"[Server Dispatcher] Expert B (PaddleOCR) error on crop {idx}: {ex_b}\n")
-                    results_b.append("")
-        finally:
-            unload_model("PaddleOCR")
-
-        # --- PASS 3: Arbiter VLM Consensus ---
-        final_results = []
-        try:
-            arbiter = get_or_load_model(arbiter_model_id)
-            for idx, img_b64 in enumerate(crops_base64):
-                if not img_b64:
-                    final_results.append("")
-                    continue
-                
-                result_a = results_a[idx]
-                result_b = results_b[idx]
-
-                try:
-                    arbiter.reset()
-                    
-                    user_prompt = (
-                        f"Expert OCR transcriptions candidates:\n"
-                        f"- Candidate A: {result_a}\n"
-                        f"- Candidate B: {result_b}\n\n"
-                        f"Source Language: {source_lang}\n"
-                        f"Target Language: {target_lang}\n\n"
-                        f"Verify against the image. Output ONLY the corrected final Japanese transcription. Do not explain, translate, or conversationalize."
-                    )
-
-                    if MODELS_CONFIG[arbiter_model_id].get("handler_class") == "Llava15ChatHandler":
-                        user_text = f"{system_instruction}\n\n{user_prompt}"
-                        messages = [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "image_url", "image_url": {"url": img_b64}},
-                                    {"type": "text", "text": user_text}
-                                ]
-                            }
-                        ]
-                    else:
-                        messages = [
-                            {
-                                "role": "system",
-                                "content": system_instruction
-                            },
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "image_url", "image_url": {"url": img_b64}},
-                                    {"type": "text", "text": user_prompt}
-                                ]
-                            }
-                        ]
-
-                    try:
-                        response = arbiter.create_chat_completion(messages=messages)
-                    except Exception as inf_err:
-                        if _n_gpu_layers_used != 0:
-                            sys.stderr.write(f"[Server Dispatcher] Arbiter VLM GPU execution failed. Re-routing to CPU...\n")
-                            arbiter = get_or_load_model(arbiter_model_id, force_cpu=True)
-                            arbiter.reset()
+                        try:
                             response = arbiter.create_chat_completion(messages=messages)
-                        else:
-                            raise inf_err
+                        except Exception as inf_err:
+                            if _n_gpu_layers_used != 0:
+                                sys.stderr.write(f"[Server Dispatcher] Arbiter VLM GPU execution failed. Re-routing to CPU...\n")
+                                arbiter = get_or_load_model(arbiter_model_id, force_cpu=True)
+                                arbiter.reset()
+                                response = arbiter.create_chat_completion(messages=messages)
+                            else:
+                                raise inf_err
 
-                    text_final = response["choices"][0]["message"]["content"]
-                    final_results.append(text_final.strip() if text_final else "")
-                    sys.stderr.write(f"[Server Dispatcher] Ensemble crop {idx} final: '{result_a}' / '{result_b}' -> '{text_final.strip()}'\n")
-                except Exception as ex_c:
-                    sys.stderr.write(f"[Server Dispatcher] Arbiter consensus error on crop {idx}: {ex_c}\n")
-                    final_results.append(result_a or result_b or "") # fallback to any expert
-        finally:
-            unload_model(arbiter_model_id)
+                        text_final = response["choices"][0]["message"]["content"]
+                        final_results.append(text_final.strip() if text_final else "")
+                        sys.stderr.write(f"[Server Dispatcher] Ensemble crop {idx} final: '{result_a}' / '{result_b}' -> '{text_final.strip()}'\n")
+                    except Exception as ex_c:
+                        sys.stderr.write(f"[Server Dispatcher] Arbiter consensus error on crop {idx}: {ex_c}\n")
+                        final_results.append(result_a or result_b or "") # fallback to any expert
+            finally:
+                unload_model(arbiter_model_id)
 
-        return final_results
+            yield json.dumps({
+                "type": "progress",
+                "percentage": 1.0,
+                "message": "Completed Ensemble OCR Consensus."
+            }) + "\n"
+            yield json.dumps({"type": "result", "results": final_results}) + "\n"
+
+        return StreamingResponse(event_generator(), media_type="application/x-ndjson")

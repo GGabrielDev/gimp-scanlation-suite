@@ -1,4 +1,5 @@
 import sys
+import json
 import requests
 
 def get_available_models(task_type, api_url):
@@ -29,9 +30,9 @@ def get_available_models(task_type, api_url):
         
     return fallback_models
 
-def dispatch_batch(task_type, model_id, batch_payload, api_url, options=None):
+def dispatch_batch(task_type, model_id, batch_payload, api_url, options=None, progress_callback=None):
     """
-    Sends an inference task payload to the remote dispatcher server.
+    Sends an inference task payload to the remote dispatcher server and streams progress updates.
     """
     if not api_url:
         raise ValueError("Remote API URL must be specified.")
@@ -46,23 +47,32 @@ def dispatch_batch(task_type, model_id, batch_payload, api_url, options=None):
     
     sys.stderr.write(f"[Remote Client] Dispatching '{task_type}' task (model='{model_id}') to: {url}...\n")
     
-    # 90 second timeout allows ample time for lazy-loading larger models on the server
-    response = requests.post(url, json=payload, timeout=90.0)
+    # 600 second timeout for lazy-loading larger models and streaming chunked responses
+    response = requests.post(url, json=payload, timeout=600.0, stream=True)
     
     if response.status_code != 200:
         error_msg = f"Server returned error code {response.status_code}"
         try:
-            detail = response.json().get("detail", "")
+            content = response.content.decode("utf-8")
+            data = json.loads(content)
+            detail = data.get("detail", "")
             if detail:
                 error_msg += f": {detail}"
         except Exception:
             pass
         raise RuntimeError(error_msg)
         
+    results = []
     try:
-        results = response.json()
-        if not isinstance(results, list):
-            raise ValueError("Expected a JSON array response containing results.")
-        return results
+        for line in response.iter_lines():
+            if line:
+                data = json.loads(line.decode("utf-8"))
+                if data.get("type") == "progress":
+                    if progress_callback:
+                        progress_callback(data.get("percentage", 0.0), data.get("message", ""))
+                elif data.get("type") == "result":
+                    results = data.get("results", [])
     except Exception as parse_err:
-        raise RuntimeError(f"Failed to parse server response as JSON list: {parse_err}")
+        raise RuntimeError(f"Failed to parse streaming server response: {parse_err}")
+        
+    return results

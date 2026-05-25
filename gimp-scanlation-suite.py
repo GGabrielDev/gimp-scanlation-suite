@@ -841,6 +841,14 @@ class GimpScanlationSuite(Gimp.PlugIn):
             result_container = []
             error_container = []
 
+            def progress_cb(percentage, message):
+                def update_ui(pct, msg):
+                    if msg:
+                        Gimp.progress_set_text(msg)
+                    Gimp.progress_update(pct)
+                    return False
+                GLib.idle_add(update_ui, percentage, message)
+
             def worker():
                 try:
                     options = {
@@ -850,12 +858,20 @@ class GimpScanlationSuite(Gimp.PlugIn):
                         "half_to_full": half_to_full
                     }
                     task_type = "ensemble_ocr" if ocr_engine_param == "Ensemble" else "ocr"
-                    res = remote_client.dispatch_batch(task_type, ocr_engine_param, batch_payload, api_url, options=options)
+                    res = remote_client.dispatch_batch(
+                        task_type,
+                        ocr_engine_param,
+                        batch_payload,
+                        api_url,
+                        options=options,
+                        progress_callback=progress_cb
+                    )
                     result_container.append(res)
                 except Exception as ex:
                     error_container.append(ex)
 
             Gimp.message(f"[Koharu OCR] Sending {len(crops)} crops to remote dispatcher at {api_url}...")
+            Gimp.progress_init("Initializing consensus OCR...")
             
             t = threading.Thread(target=worker)
             t.daemon = True
@@ -866,6 +882,8 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 while GLib.MainContext.default().iteration(False):
                     pass
                 time.sleep(0.05)
+
+            Gimp.progress_end()
 
             if error_container:
                 sys.stderr.write(f"[Koharu OCR] Remote dispatch failed: {error_container[0]}\n")
