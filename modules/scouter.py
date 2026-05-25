@@ -1,8 +1,6 @@
 import os
 import sys
 import glob
-import urllib.request
-import urllib.parse
 import numpy as np
 
 # Bootstrapping local venv site-packages so we can import onnxruntime
@@ -16,195 +14,72 @@ import gi
 gi.require_version('Gegl', '0.4')
 from gi.repository import Gegl
 
-MODEL_IMAGE_SIZE = 1024
-MODEL_FILENAME = "comic-text-detector.onnx"
-DEFAULT_MODEL_URL = (
-    "https://huggingface.co/koharu-scanlation/comic-text-detector/resolve/main/"
-    "comic-text-detector.onnx"
-)
-MODEL_DOWNLOAD_TIMEOUT_SECONDS = 60
-
-
-def resize_image(img, new_w, new_h):
-    """
-    Bilinear interpolation to resize a numpy image of shape (H, W, C).
-    Done in pure NumPy to avoid dependency on OpenCV or PIL.
-    """
-    h, w, c = img.shape
-    x = np.linspace(0, w - 1, new_w)
-    y = np.linspace(0, h - 1, new_h)
-
-    x_indices = np.floor(x).astype(np.int32)
-    y_indices = np.floor(y).astype(np.int32)
-
-    x_indices_next = np.minimum(x_indices + 1, w - 1)
-    y_indices_next = np.minimum(y_indices + 1, h - 1)
-
-    x_weight = (x - x_indices).reshape(1, new_w, 1)
-    y_weight = (y - y_indices).reshape(new_h, 1, 1)
-
-    p00 = img[y_indices][:, x_indices]
-    p10 = img[y_indices][:, x_indices_next]
-    p01 = img[y_indices_next][:, x_indices]
-    p11 = img[y_indices_next][:, x_indices_next]
-
-    interpolated = (
-        p00 * (1 - x_weight) * (1 - y_weight) +
-        p10 * x_weight * (1 - y_weight) +
-        p01 * (1 - x_weight) * y_weight +
-        p11 * x_weight * y_weight
-    )
-    return interpolated.astype(np.uint8)
-
-
-def nms(boxes, confidences, threshold):
-    """
-    Standard Non-Maximum Suppression (NMS) for filtering overlapping bboxes.
-    boxes: numpy array of shape (M, 4) with [xmin, ymin, xmax, ymax]
-    confidences: numpy array of shape (M,)
-    """
-    if len(boxes) == 0:
-        return []
-
-    x1 = boxes[:, 0]
-    y1 = boxes[:, 1]
-    x2 = boxes[:, 2]
-    y2 = boxes[:, 3]
-
-    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
-    order = confidences.argsort()[::-1]
-
-    keep = []
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)
-
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-
-        w = np.maximum(0.0, xx2 - xx1)
-        h = np.maximum(0.0, yy2 - yy1)
-        inter = w * h
-
-        ovr = inter / (areas[i] + areas[order[1:]] - inter + 1e-8)
-
-        inds = np.where(ovr <= threshold)[0]
-        order = order[inds + 1]
-
-    return keep
-
-
-def _normalize_yolo_predictions(outputs):
-    """
-    Normalize common YOLO ONNX output layouts to a 2D array of shape (N, C),
-    where columns are:
-      [x_center, y_center, w, h, objectness, class_0, class_1, ...]
-    """
-    for i, out in enumerate(outputs):
-        sys.stderr.write(f"[Koharu Scouter] output[{i}] shape={getattr(out, 'shape', None)}\n")
-
-    for out in outputs:
-        shape = getattr(out, "shape", None)
-        if shape is None:
-            continue
-
-        if len(shape) == 3 and shape[0] == 1:
-            preds = out[0]
-            if preds.ndim != 2:
-                continue
-
-            # Already (N, C)
-            if preds.shape[1] >= 6:
-                return preds
-
-            # Transpose from (C, N) to (N, C)
-            if preds.shape[0] >= 6:
-                return preds.T
-
-    predictions = outputs[0]
-    shape = getattr(predictions, "shape", None)
-    raise ValueError(f"Unexpected detector output shape: {shape}")
+from modules import preprocessor
+from modules import postprocessor
 
 
 def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_threshold, x_offset=0, y_offset=0):
     """
-    Run detector on an RGB numpy image and return boxes/confidences mapped back
-    to the original image coordinate space with optional offsets.
+    Run detector on a numpy image tile.
     """
     orig_h, orig_w, _ = img_np.shape
 
-    image_size = MODEL_IMAGE_SIZE
-    if orig_w >= orig_h:
-        resized_w = image_size
-        resized_h = int(image_size * orig_h / orig_w)
-    else:
-        resized_w = int(image_size * orig_w / orig_h)
-        resized_h = image_size
+    # Dynamic model input size detection
+    try:
+        input_shape = session.get_inputs()[0].shape
+        if len(input_shape) >= 4 and isinstance(input_shape[2], int):
+            image_size = input_shape[2]
+        else:
+            image_size = 640
+    except Exception:
+        image_size = 640
 
-    resized_w = max(1, resized_w)
-    resized_h = max(1, resized_h)
+    # Preprocessing
+    input_data, resized_w, resized_h = preprocessor.prepare_input_tensor(img_np, image_size)
 
-    resized_img = resize_image(img_np, resized_w, resized_h)
-
-    padded_img = np.zeros((image_size, image_size, 3), dtype=np.uint8)
-    padded_img[0:resized_h, 0:resized_w, :] = resized_img
-
-    input_data = padded_img.astype(np.float32) / 255.0
-    input_data = np.transpose(input_data, (2, 0, 1))
-    input_data = np.expand_dims(input_data, axis=0)
-
+    # Inference
     outputs = session.run(None, {input_name: input_data})
-    preds = _normalize_yolo_predictions(outputs)
 
-    if preds.shape[1] < 6:
-        raise ValueError(f"Detector predictions have too few columns: {preds.shape}")
+    # Implement defensive tensor slicing and dynamic logging of outputs[0] shape
+    output0 = outputs[0]
+    shape = getattr(output0, "shape", None)
+    sys.stderr.write(f"[Koharu Scouter] outputs[0] shape={shape}\n")
 
-    obj_conf = preds[:, 4]
-    if preds.shape[1] == 6:
-        class_conf = preds[:, 5]
+    if shape is not None and len(shape) == 3 and shape[0] == 1:
+        if shape[2] == 6:
+            # (1, anchors, 6)
+            preds = output0[0]
+        elif shape[1] == 6:
+            # (1, 6, anchors) -> Transpose to (anchors, 6)
+            preds = output0[0].T
+        else:
+            # Fallback handling based on dimensions
+            if shape[2] == 6 or (shape[2] != 6 and shape[1] == 6):
+                preds = output0[0].T if shape[1] == 6 else output0[0]
+            else:
+                preds = output0[0].T if shape[1] < shape[2] else output0[0]
     else:
-        class_conf = np.max(preds[:, 5:], axis=1)
+        # Fallback
+        preds = output0
+        if preds.ndim == 3 and preds.shape[0] == 1:
+            preds = preds[0]
+        if preds.ndim == 2:
+            if preds.shape[1] != 6 and preds.shape[0] == 6:
+                preds = preds.T
 
-    confidences = obj_conf * class_conf
-    mask = confidences >= confidence_threshold
-    valid_preds = preds[mask]
-    valid_confs = confidences[mask]
-
-    sys.stderr.write(
-        f"[Koharu Scouter] tile=({x_offset},{y_offset},{orig_w},{orig_h}) total_preds={len(preds)} valid_preds={len(valid_preds)} threshold={confidence_threshold:.2f}\n"
+    # Postprocessing
+    return postprocessor.postprocess_boxes(
+        preds, confidence_threshold, image_size, orig_w, orig_h,
+        resized_w, resized_h, x_offset, y_offset
     )
-
-    if len(valid_preds) == 0:
-        return np.empty((0, 4), dtype=np.float32), np.empty((0,), dtype=np.float32)
-
-    x_center = valid_preds[:, 0]
-    y_center = valid_preds[:, 1]
-    w = valid_preds[:, 2]
-    h = valid_preds[:, 3]
-
-    w_ratio = orig_w / resized_w
-    h_ratio = orig_h / resized_h
-
-    bbox_dilation = 1.0
-    x1 = (x_center - w / 2.0) * w_ratio - bbox_dilation + x_offset
-    x2 = (x_center + w / 2.0) * w_ratio + bbox_dilation + x_offset
-    y1 = (y_center - h / 2.0) * h_ratio - bbox_dilation + y_offset
-    y2 = (y_center + h / 2.0) * h_ratio + bbox_dilation + y_offset
-
-    boxes = np.column_stack([x1, y1, x2, y2]).astype(np.float32)
-    return boxes, valid_confs.astype(np.float32)
 
 
 def _compute_sliding_window_starts(full_size, tile_size, step_size):
     """
-    Compute deterministic sliding-window start coordinates that always include
-    the trailing edge window.
+    Compute sliding window start positions.
     """
     if full_size <= tile_size:
         return [0]
-
     last_start = full_size - tile_size
     starts = list(range(0, last_start + 1, step_size))
     if starts[-1] != last_start:
@@ -212,72 +87,11 @@ def _compute_sliding_window_starts(full_size, tile_size, step_size):
     return starts
 
 
-def _download_file(url, destination):
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("https", "http"):
-        raise ValueError(f"Unsupported URL scheme: {parsed.scheme}")
-
-    os.makedirs(os.path.dirname(destination), exist_ok=True)
-    temp_path = f"{destination}.part"
-
-    with urllib.request.urlopen(url, timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS) as response:
-        if response.status != 200:
-            raise RuntimeError(f"HTTP status {response.status}")
-
-        with open(temp_path, "wb") as out:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                out.write(chunk)
-
-    os.replace(temp_path, destination)
-
-
-def _resolve_detector_model_path():
-    explicit_path = os.environ.get("KOHARU_COMIC_TEXT_DETECTOR_PATH")
-    default_model_dir = os.environ.get("KOHARU_MODELS_DIR", os.path.join(plugin_dir, "models"))
-    default_path = os.path.join(default_model_dir, MODEL_FILENAME)
-    legacy_path = os.path.expanduser("~/Projects/gimp-scanlation-suite/models/comic-text-detector.onnx")
-
-    candidate_paths = [p for p in (explicit_path, default_path, legacy_path) if p]
-    for path in candidate_paths:
-        if os.path.exists(path):
-            return path
-
-    target_path = explicit_path or default_path
-    model_url = os.environ.get("KOHARU_COMIC_TEXT_DETECTOR_URL", DEFAULT_MODEL_URL)
-    auto_download_enabled = os.environ.get("KOHARU_AUTO_DOWNLOAD_MODELS", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-    )
-
-    if not auto_download_enabled:
-        sys.stderr.write(
-            f"[Koharu Scouter] Model missing at {target_path}. Auto-download disabled.\n"
-        )
-        return None
-
-    try:
-        sys.stderr.write(
-            f"[Koharu Scouter] Model not found locally. Downloading from: {model_url}\n"
-        )
-        _download_file(model_url, target_path)
-        sys.stderr.write(f"[Koharu Scouter] Model downloaded to: {target_path}\n")
-        return target_path
-    except Exception as exc:
-        sys.stderr.write(
-            f"[Koharu Scouter] Failed to download model from {model_url}: {exc}\n"
-        )
-        return None
-
-
-def detect_text_bubbles(layer, confidence_threshold=0.22, nms_threshold=0.55):
+def detect_text_bubbles(layer, model_path, confidence_threshold=0.22, nms_threshold=0.55):
     """
-    Extracts GeglBuffer pixel data, runs ONNX text-bubble detector,
-    and returns a list of bounding box coordinates [[xmin, ymin, xmax, ymax], ...].
-    Uses full-image plus overlapping tiled inference to improve recall on large/stylized text.
+    Extracts GeglBuffer pixel data, converts to high-contrast grayscale,
+    runs ONNX text-bubble detector on full image and sliding window tiles,
+    applies NMS, and returns final bounding boxes.
     """
     buffer = layer.get_buffer()
     rect = buffer.get_extent()
@@ -288,34 +102,42 @@ def detect_text_bubbles(layer, confidence_threshold=0.22, nms_threshold=0.55):
     img_np = np.frombuffer(raw_data, dtype=np.uint8)
     img_np = img_np.reshape((full_h, full_w, 3))
 
-    model_path = _resolve_detector_model_path()
-    if not model_path:
+    # Preprocessing: Convert RGB input to grayscale and restack to 3 channels
+    img_np = preprocessor.to_grayscale(img_np)
+
+    if not model_path or not os.path.exists(model_path):
+        sys.stderr.write(f"[Koharu Scouter] Model path '{model_path}' not found.\n")
         return []
 
+    # Enforce CPU Execution Provider
     session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
     input_name = session.get_inputs()[0].name
+
+    # Dynamic model image size detection for sliding window sizing
+    try:
+        input_shape = session.get_inputs()[0].shape
+        if len(input_shape) >= 4 and isinstance(input_shape[2], int):
+            model_image_size = input_shape[2]
+        else:
+            model_image_size = 640
+    except Exception:
+        model_image_size = 640
 
     all_boxes = []
     all_confs = []
 
-    # Pass 1: full image using RGB to preserve title/text styling cues.
+    # Pass 1: Full image detection
     boxes, confs = _run_model_on_image(
-        session,
-        input_name,
-        img_np,
-        confidence_threshold,
-        nms_threshold,
-        x_offset=0,
-        y_offset=0,
+        session, input_name, img_np, confidence_threshold, nms_threshold,
+        x_offset=0, y_offset=0
     )
     if len(boxes) > 0:
         all_boxes.append(boxes)
         all_confs.append(confs)
 
-    # Pass 2: overlapping model-sized tiled inference to preserve detail on
-    # high-resolution pages while still covering the full image.
-    tile_w = min(full_w, MODEL_IMAGE_SIZE)
-    tile_h = min(full_h, MODEL_IMAGE_SIZE)
+    # Pass 2: Overlapping sliding-window tiled inference
+    tile_w = min(full_w, model_image_size)
+    tile_h = min(full_h, model_image_size)
     step_x = max(1, tile_w // 2)
     step_y = max(1, tile_h // 2)
 
@@ -328,18 +150,13 @@ def detect_text_bubbles(layer, confidence_threshold=0.22, nms_threshold=0.55):
             y1 = min(full_h, y0 + tile_h)
             tile = img_np[y0:y1, x0:x1, :]
 
-            # Skip tiles that are effectively the full image to avoid duplicate work.
+            # Skip if tile matches the full image
             if x0 == 0 and y0 == 0 and tile.shape[1] == full_w and tile.shape[0] == full_h:
                 continue
 
             tile_boxes, tile_confs = _run_model_on_image(
-                session,
-                input_name,
-                tile,
-                confidence_threshold,
-                nms_threshold,
-                x_offset=x0,
-                y_offset=y0,
+                session, input_name, tile, confidence_threshold, nms_threshold,
+                x_offset=x0, y_offset=y0
             )
             if len(tile_boxes) > 0:
                 all_boxes.append(tile_boxes)
@@ -351,11 +168,13 @@ def detect_text_bubbles(layer, confidence_threshold=0.22, nms_threshold=0.55):
     boxes = np.vstack(all_boxes)
     confidences = np.concatenate(all_confs)
 
+    # Clip coordinates to GIMP layer bounds
     boxes[:, 0] = np.clip(boxes[:, 0], 0, full_w)
     boxes[:, 2] = np.clip(boxes[:, 2], 0, full_w)
     boxes[:, 1] = np.clip(boxes[:, 1], 0, full_h)
     boxes[:, 3] = np.clip(boxes[:, 3], 0, full_h)
 
+    # Filter invalid bounding boxes (where min >= max)
     valid_geom = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
     boxes = boxes[valid_geom]
     confidences = confidences[valid_geom]
@@ -363,9 +182,11 @@ def detect_text_bubbles(layer, confidence_threshold=0.22, nms_threshold=0.55):
     if len(boxes) == 0:
         return []
 
-    keep = nms(boxes, confidences, nms_threshold)
+    # Final NMS merging
+    keep = postprocessor.nms(boxes, confidences, nms_threshold)
     sys.stderr.write(
-        f"[Koharu Scouter] merged_boxes={len(boxes)} kept_after_nms={len(keep)} nms_threshold={nms_threshold:.2f}\n"
+        f"[Koharu Scouter] merged_boxes={len(boxes)} kept_after_nms={len(keep)} "
+        f"nms_threshold={nms_threshold:.2f}\n"
     )
     final_boxes = boxes[keep]
 
