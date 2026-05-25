@@ -169,8 +169,8 @@ class GimpScanlationSuite(Gimp.PlugIn):
             procedure.add_string_argument(
                 "ocr-engine",
                 "_OCR Engine",
-                "OCR engine to use (e.g. manga-ocr, mit48px-ocr, paddleocr)",
-                "manga-ocr",
+                "OCR engine/model to use",
+                "PaddleOCR",
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_boolean_argument(
@@ -178,6 +178,27 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "_Convert Half-width to Full-width",
                 "Post-process ASCII characters to full-width CJK alternatives",
                 True,
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "inference-mode",
+                "_Inference Mode",
+                "Where to run inference (Local or Remote)",
+                "Local",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "api-url",
+                "_API URL",
+                "Dispatcher API server URL (e.g. http://localhost:7890)",
+                "http://localhost:7890",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "target-language",
+                "_Target Language",
+                "Target language context for the VLM prompt",
+                "Japanese",
                 GObject.ParamFlags.READWRITE
             )
             return procedure
@@ -432,6 +453,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             
             vbox = dialog.get_content_area()
             
+            # Premium Header Box
             header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
             header_box.set_margin_top(12)
             header_box.set_margin_bottom(12)
@@ -444,34 +466,130 @@ class GimpScanlationSuite(Gimp.PlugIn):
             header_box.pack_start(title_label, False, False, 0)
             
             desc_label = Gtk.Label()
-            desc_label.set_text("Performs optical character recognition (OCR) on the grayscaled bounds of text regions using a VisionEncoderDecoder Transformer model.")
+            desc_label.set_text("Performs optical character recognition (OCR) on text regions using local or remote VLM inference.")
             desc_label.set_line_wrap(True)
             desc_label.set_xalign(0.0)
             header_box.pack_start(desc_label, False, False, 0)
-            
             vbox.pack_start(header_box, False, False, 0)
+
+            # Custom Grid for dropdown selectors
+            grid = Gtk.Grid()
+            grid.set_column_spacing(12)
+            grid.set_row_spacing(12)
+            grid.set_margin_start(12)
+            grid.set_margin_end(12)
+            grid.set_margin_bottom(12)
+            
+            # Inference Mode Select
+            inf_label = Gtk.Label()
+            inf_label.set_markup("<b>Inference Mode:</b>")
+            inf_label.set_xalign(0.0)
+            grid.attach(inf_label, 0, 0, 1, 1)
+            
+            combo_inf = Gtk.ComboBoxText()
+            combo_inf.append_text("Local")
+            combo_inf.append_text("Remote")
+            grid.attach(combo_inf, 1, 0, 1, 1)
+            
+            # OCR Model/Engine Select
+            model_label = Gtk.Label()
+            model_label.set_markup("<b>OCR Model / Engine:</b>")
+            model_label.set_xalign(0.0)
+            grid.attach(model_label, 0, 1, 1, 1)
+            
+            combo_model = Gtk.ComboBoxText()
+            grid.attach(combo_model, 1, 1, 1, 1)
+            
+            vbox.pack_start(grid, False, False, 0)
+            
+            # Set initial values based on config
+            inf_val = config.get_property("inference-mode") or "Local"
+            if inf_val == "Remote":
+                combo_inf.set_active(1)
+            else:
+                combo_inf.set_active(0)
+                
+            # Populating dropdown safely in the idle loop
+            def populate_dropdown(models):
+                combo_model.remove_all()
+                for m in models:
+                    combo_model.append_text(m)
+                
+                stored_model = config.get_property("ocr-engine")
+                if stored_model in models:
+                    combo_model.set_active(models.index(stored_model))
+                else:
+                    combo_model.set_active(0)
+                return False
+
+            import threading
+            
+            def load_remote_models_bg():
+                from modules import remote_client
+                api_url = config.get_property("api-url") or "http://localhost:7890"
+                models = remote_client.get_available_models("ocr", api_url)
+                GLib.idle_add(populate_dropdown, models)
+
+            def update_model_dropdown():
+                current_mode = config.get_property("inference-mode")
+                if current_mode == "Remote":
+                    # Non-blocking remote query in a background thread
+                    t = threading.Thread(target=load_remote_models_bg)
+                    t.daemon = True
+                    t.start()
+                else:
+                    populate_dropdown(["PaddleOCR"])
+
+            def on_inf_changed(widget):
+                val = widget.get_active_text()
+                config.set_property("inference-mode", val)
+                update_model_dropdown()
+                
+            combo_inf.connect("changed", on_inf_changed)
+
+            def on_model_changed(widget):
+                val = widget.get_active_text()
+                if val:
+                    config.set_property("ocr-engine", val)
+                    
+            combo_model.connect("changed", on_model_changed)
+
+            update_model_dropdown()
             vbox.show_all()
             
-            dialog.fill(None)
+            # Render remaining free-text and checkbox arguments
+            dialog.fill(["api-url", "target-language", "half-to-full"])
             
             if not dialog.run():
                 return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
 
-        ocr_engine_param = config.get_property("ocr-engine")
+        # Parameters extraction
+        ocr_engine_param = config.get_property("ocr-engine") or "PaddleOCR"
         half_to_full = config.get_property("half-to-full")
+        inference_mode = config.get_property("inference-mode") or "Local"
+        api_url = config.get_property("api-url") or "http://localhost:7890"
+        target_lang = config.get_property("target-language") or "Japanese"
 
-        Gimp.message(f"[Koharu OCR] Running '{ocr_engine_param}' (half-to-full postprocess={half_to_full})...")
+        Gimp.message(f"[Koharu OCR] Running in {inference_mode} mode using '{ocr_engine_param}'...")
 
-        # 1. Verification of active layer and engine import
+        # 1. Verification of active layer and engine imports
         if not drawables:
             Gimp.message("Error: No active drawable/layer selected.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
             
         active_layer = drawables[0]
 
-        if ocr_engine is None:
-            Gimp.message("Error: OCR engine module could not be imported. Check venv dependencies.")
-            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+        if inference_mode == "Local":
+            if ocr_engine is None:
+                Gimp.message("Error: OCR engine module could not be imported. Check venv dependencies.")
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+        else:
+            # Remote mode requires remote_client and requests
+            try:
+                from modules import remote_client
+            except ImportError as e:
+                Gimp.message(f"Error: Remote client module could not be imported: {e}")
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
         # Pump events
         while GLib.MainContext.default().iteration(False):
@@ -548,17 +666,18 @@ class GimpScanlationSuite(Gimp.PlugIn):
             Gimp.message("No valid text bounding boxes found in the selected path.")
             return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
-        # Check if the model needs to be downloaded, showing progress
-        models_dir = os.path.expanduser("~/Projects/gimp-scanlation-suite/models")
-        gguf_path = os.path.join(models_dir, "PaddleOCR-VL-1.5-Q4_K_M.gguf")
-        projector_path = os.path.join(models_dir, "PaddleOCR-VL-1.5-mmproj.gguf")
-        
-        if not os.path.exists(gguf_path) or not os.path.exists(projector_path):
-            Gimp.message("[Koharu OCR] OCR model weights not found locally. Downloading PaddleOCR-VL-1.5 GGUF and vision projector (approx. 180MB total). This may take a moment...")
-            while GLib.MainContext.default().iteration(False):
-                pass
+        # Check local model weights presence if in Local Mode
+        if inference_mode == "Local":
+            models_dir = os.path.expanduser("~/Projects/gimp-scanlation-suite/models")
+            gguf_path = os.path.join(models_dir, "PaddleOCR-VL-1.5-Q4_K_M.gguf")
+            projector_path = os.path.join(models_dir, "PaddleOCR-VL-1.5-mmproj.gguf")
+            
+            if not os.path.exists(gguf_path) or not os.path.exists(projector_path):
+                Gimp.message("[Koharu OCR] OCR model weights not found locally. Downloading PaddleOCR-VL-1.5 GGUF and vision projector (approx. 180MB total). This may take a moment...")
+                while GLib.MainContext.default().iteration(False):
+                    pass
 
-        # 4. Extract pixel crops and run OCR
+        # 4. Extract pixel crops
         try:
             buffer = active_layer.get_buffer()
             rect = buffer.get_extent()
@@ -586,12 +705,12 @@ class GimpScanlationSuite(Gimp.PlugIn):
         while GLib.MainContext.default().iteration(False):
             pass
 
-        # We will loop over each bounding box, crop, and run OCR
-        ocr_results = []
+        # Crop all regions
+        crops = []
+        valid_boxes = []
         for i, box in enumerate(bounding_boxes):
             xmin, ymin, xmax, ymax = box
             
-            # Map image-relative path coordinates to layer-relative buffer coordinates
             x0 = int(np.clip(xmin - offset_x, 0, full_w))
             x1 = int(np.clip(xmax - offset_x, 0, full_w))
             y0 = int(np.clip(ymin - offset_y, 0, full_h))
@@ -601,35 +720,93 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 sys.stderr.write(f"[Koharu OCR] Box {i} has empty intersection with layer: {box}\n")
                 continue
 
-            crop = img_np[y0:y1, x0:x1, :]
+            crops.append(img_np[y0:y1, x0:x1, :])
+            valid_boxes.append(box)
+
+        if not crops:
+            Gimp.message("No valid cropped text regions to process.")
+            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+        ocr_results = []
+
+        # 5. Run inference depending on mode
+        if inference_mode == "Local":
+            # Run local inference sequentially
+            for i, crop in enumerate(crops):
+                box = valid_boxes[i]
+                Gimp.message(f"[Koharu OCR] Performing local OCR on region {i+1}/{len(crops)}...")
+                while GLib.MainContext.default().iteration(False):
+                    pass
+                    
+                try:
+                    res_list = ocr_engine.extract_text_from_crops([crop])
+                    raw_text = res_list[0] if res_list else ""
+                    normalized_text = clean_and_normalize_text(raw_text, half_to_full=half_to_full)
+                    ocr_results.append(normalized_text)
+                    sys.stderr.write(f"[Koharu OCR] Region {i} bounding box {box} -> '{normalized_text}'\n")
+                except Exception as ocr_err:
+                    sys.stderr.write(f"[Koharu OCR] Local inference error on region {i}: {ocr_err}\n")
+                    ocr_results.append("")
+                
+                while GLib.MainContext.default().iteration(False):
+                    pass
+        else:
+            # Run remote dispatch in a background thread to prevent UI freezing
+            import io
+            import base64
+            from PIL import Image
+            import time
+            import threading
             
-            Gimp.message(f"[Koharu OCR] Performing OCR on region {len(ocr_results)+1}/{len(bounding_boxes)}...")
-            # Pump event loop
-            while GLib.MainContext.default().iteration(False):
-                pass
-                
-            try:
-                # Run OCR single crop
-                res_list = ocr_engine.extract_text_from_crops([crop])
-                raw_text = res_list[0] if res_list else ""
-                
-                # Apply custom normalization rules
-                normalized_text = clean_and_normalize_text(raw_text, half_to_full=half_to_full)
-                ocr_results.append(normalized_text)
-                
-                # Print result to stderr for logs
-                sys.stderr.write(f"[Koharu OCR] Region {i} bounding box {box} -> '{normalized_text}'\n")
-            except Exception as ocr_err:
-                sys.stderr.write(f"[Koharu OCR] Inference error on region {i}: {ocr_err}\n")
-                ocr_results.append("")
+            # Serialize crops to base64 JPEGs
+            sys.stderr.write("[Koharu OCR] Serializing crops to base64 JPEGs...\n")
+            batch_payload = []
+            for crop in crops:
+                pil_img = Image.fromarray(crop)
+                buffered = io.BytesIO()
+                pil_img.save(buffered, format="JPEG")
+                img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                batch_payload.append(img_str)
+
+            result_container = []
+            error_container = []
+
+            def worker():
+                try:
+                    options = {"target_language": target_lang}
+                    res = remote_client.dispatch_batch("ocr", ocr_engine_param, batch_payload, api_url, options=options)
+                    result_container.append(res)
+                except Exception as ex:
+                    error_container.append(ex)
+
+            Gimp.message(f"[Koharu OCR] Sending {len(crops)} crops to remote dispatcher at {api_url}...")
             
-            # Pump events again
-            while GLib.MainContext.default().iteration(False):
-                pass
+            t = threading.Thread(target=worker)
+            t.daemon = True
+            t.start()
+
+            # Pump GTK event loop while waiting for remote completion
+            while t.is_alive():
+                while GLib.MainContext.default().iteration(False):
+                    pass
+                time.sleep(0.05)
+
+            if error_container:
+                sys.stderr.write(f"[Koharu OCR] Remote dispatch failed: {error_container[0]}\n")
+                Gimp.message(f"Remote OCR failed: {error_container[0]}")
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+            if result_container:
+                raw_results = result_container[0]
+                for i, raw_text in enumerate(raw_results):
+                    box = valid_boxes[i]
+                    normalized_text = clean_and_normalize_text(raw_text, half_to_full=half_to_full)
+                    ocr_results.append(normalized_text)
+                    sys.stderr.write(f"[Koharu OCR] Region {i} bounding box {box} -> '{normalized_text}'\n")
 
         # Display summary message
         non_empty = [t for t in ocr_results if t.strip()]
-        Gimp.message(f"OCR Complete! Processed {len(bounding_boxes)} regions, recognized {len(non_empty)} text blocks.")
+        Gimp.message(f"OCR Complete! Processed {len(valid_boxes)} regions, recognized {len(non_empty)} text blocks.")
         
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
