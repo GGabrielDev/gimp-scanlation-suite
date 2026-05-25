@@ -548,7 +548,18 @@ def dispatch(request: BatchRequest):
                             )
 
                         # Remove the image from the user_prompt payload to prevent the Visual Capture Trap
-                        if MODELS_CONFIG[arbiter_model_id].get("handler_class") == "Llava15ChatHandler":
+                        if MODELS_CONFIG[arbiter_model_id].get("handler_class") == "TextOnly":
+                            messages = [
+                                {
+                                    "role": "system",
+                                    "content": system_instruction
+                                },
+                                {
+                                    "role": "user",
+                                    "content": user_prompt
+                                }
+                            ]
+                        elif MODELS_CONFIG[arbiter_model_id].get("handler_class") == "Llava15ChatHandler":
                             user_text = f"{system_instruction}\n\n{user_prompt}"
                             messages = [
                                 {
