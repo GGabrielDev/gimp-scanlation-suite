@@ -28,16 +28,16 @@ class BatchRequest(BaseModel):
 
 # Model Configuration Registry
 MODELS_CONFIG = {
-    "PaddleOCR": {
-        "repo": "mradermacher/Fast-PaddleOCR-VL-1.5-GGUF",
-        "file": "Fast-PaddleOCR-VL-1.5.Q4_K_M.gguf",
-        "projector_repo": "PaddlePaddle/PaddleOCR-VL-1.5-GGUF",
-        "projector_file": "PaddleOCR-VL-1.5-mmproj.gguf",
-        "local_name": "PaddleOCR-VL-1.5-Q4_K_M.gguf",
-        "local_projector_name": "PaddleOCR-VL-1.5-mmproj.gguf",
+    "PaddleOCR_Manga": {
+        "repo": "adambarbato/PaddleOCR-VL-For-Manga-GGUF",
+        "file": "PaddleOCR-VL-For-Manga-BF16.gguf",
+        "projector_repo": "adambarbato/PaddleOCR-VL-For-Manga-GGUF",
+        "projector_file": "PaddleOCR-VL-For-Manga-mmproj-BF16.gguf",
+        "local_name": "PaddleOCR-VL-For-Manga-BF16.gguf",
+        "local_projector_name": "PaddleOCR-VL-For-Manga-mmproj-BF16.gguf",
         "handler_class": "Llava15ChatHandler",
         "n_ctx": 4096,
-        "n_gpu_layers": 0
+        "n_gpu_layers": -1
     },
     "olmOCR2_Q4": {
         "repo": "bartowski/allenai_olmOCR-2-7B-1025-GGUF",
@@ -68,6 +68,17 @@ MODELS_CONFIG = {
         "local_projector_name": "mmproj-allenai_olmOCR-2-7B-1025-f16.gguf",
         "handler_class": "Qwen25VLChatHandler",
         "n_ctx": 4096
+    },
+    "JP_Arbiter_8B": {
+        "repo": "RumiaChannel/llm-jp-4-8b-thinking-uncensored-ara-gguf",
+        "file": "llm-jp-4-8b-thinking-uncensored-ara-Q8_0.gguf",
+        "projector_repo": None,
+        "projector_file": None,
+        "local_name": "llm-jp-4-8b-thinking-uncensored-Q8.gguf",
+        "local_projector_name": None,
+        "handler_class": "TextOnly",
+        "n_ctx": 8192,
+        "n_gpu_layers": -1
     }
 }
 
@@ -143,18 +154,22 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
 
     sys.stderr.write(f"[Server Dispatcher] Fetching weights for '{model_id}'...\n")
     model_path = model_manager.ensure_model_exists(cfg["repo"], cfg["file"], local_filename=cfg["local_name"])
-    proj_path = model_manager.ensure_model_exists(cfg["projector_repo"], cfg["projector_file"], local_filename=cfg["local_projector_name"])
 
-    # Load appropriate Chat Handler
+    # Bypass vision loading for TextOnly models
     handler_class = cfg["handler_class"]
-    sys.stderr.write(f"[Server Dispatcher] Loading Vision Projector ({handler_class})...\n")
-    if handler_class == "Qwen25VLChatHandler":
-        from llama_cpp.llama_chat_format import Qwen25VLChatHandler
-        chat_handler = Qwen25VLChatHandler(clip_model_path=proj_path, verbose=False)
+    if handler_class == "TextOnly":
+        proj_path = None
+        chat_handler = None
     else:
-        from llama_cpp.llama_chat_format import Llava15ChatHandler
-        chat_handler = Llava15ChatHandler(clip_model_path=proj_path, verbose=False)
-        chat_handler.DEFAULT_SYSTEM_MESSAGE = None
+        proj_path = model_manager.ensure_model_exists(cfg["projector_repo"], cfg["projector_file"], local_filename=cfg["local_projector_name"])
+        sys.stderr.write(f"[Server Dispatcher] Loading Vision Projector ({handler_class})...\n")
+        if handler_class == "Qwen25VLChatHandler":
+            from llama_cpp.llama_chat_format import Qwen25VLChatHandler
+            chat_handler = Qwen25VLChatHandler(clip_model_path=proj_path, verbose=False)
+        else:
+            from llama_cpp.llama_chat_format import Llava15ChatHandler
+            chat_handler = Llava15ChatHandler(clip_model_path=proj_path, verbose=False)
+            chat_handler.DEFAULT_SYSTEM_MESSAGE = None
 
     sys.stderr.write(f"[Server Dispatcher] Initializing LLM context (n_ctx={cfg['n_ctx']})...\n")
     
@@ -171,16 +186,17 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         _n_gpu_layers_used = 0
     else:
         try:
-            sys.stderr.write("[Server Dispatcher] Trying GPU offloading (n_gpu_layers=-1)...\n")
+            n_layers = cfg.get("n_gpu_layers", -1)
+            sys.stderr.write(f"[Server Dispatcher] Trying GPU offloading (n_gpu_layers={n_layers})...\n")
             llm = Llama(
                 model_path=model_path,
                 chat_handler=chat_handler,
                 n_ctx=cfg["n_ctx"],
                 logits_all=False,
-                n_gpu_layers=-1,
+                n_gpu_layers=n_layers,
                 verbose=False
             )
-            _n_gpu_layers_used = -1
+            _n_gpu_layers_used = n_layers
             sys.stderr.write("[Server Dispatcher] GPU initialization succeeded.\n")
         except Exception as e:
             sys.stderr.write(f"[Server Dispatcher] GPU loading failed: {e}. Falling back to CPU...\n")
@@ -209,17 +225,13 @@ def list_models(task_type: str = Query(..., description="The type of pipeline ta
     return {"models": []}
 
 def preprocess_for_ocr(img_b64: str) -> str:
-    """Bumps contrast and converts to grayscale to make dakuten and squeezed characters pop."""
+    """Safely converts the base64 string to an RGB PIL Image and back, without altering the visual data."""
     import base64
     import io
-    from PIL import Image, ImageEnhance
+    from PIL import Image
     try:
         header, data = img_b64.split(",", 1)
-        pil_img = Image.open(io.BytesIO(base64.b64decode(data))).convert("L") # Convert to grayscale
-        
-        # Drastically increase contrast to separate squeezed strokes
-        enhancer = ImageEnhance.Contrast(pil_img)
-        pil_img = enhancer.enhance(2.5) 
+        pil_img = Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
         
         # Re-encode to b64
         buffered = io.BytesIO()
@@ -370,7 +382,7 @@ def dispatch(request: BatchRequest):
         # Determine Arbiter VLM Model ID
         arbiter_model_id = model
         if arbiter_model_id == "Ensemble":
-            arbiter_model_id = "olmOCR2_Q4" # default strong arbiter VLM
+            arbiter_model_id = "JP_Arbiter_8B" # default strong arbiter VLM
 
         if arbiter_model_id not in MODELS_CONFIG:
             raise HTTPException(status_code=400, detail=f"Arbiter VLM Model ID '{arbiter_model_id}' is not registered.")
@@ -433,7 +445,8 @@ def dispatch(request: BatchRequest):
 
             # --- PASS 2: Expert B ---
             results_b = []
-            expert_b_model_id = arbiter_model_id
+            # Expert B must be a vision model; if the arbiter is text-only, we fall back to PaddleOCR_Manga
+            expert_b_model_id = "PaddleOCR_Manga" if MODELS_CONFIG.get(arbiter_model_id, {}).get("handler_class") == "TextOnly" else arbiter_model_id
             try:
                 yield json.dumps({
                     "type": "progress",
