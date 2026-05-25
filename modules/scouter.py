@@ -45,11 +45,11 @@ def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_t
         orig_target_sizes_input = next(i for i in inputs if i.name == "orig_target_sizes")
         type_str = orig_target_sizes_input.type
         if "int64" in type_str:
-            orig_sizes = np.array([[orig_h, orig_w]], dtype=np.int64)
+            orig_sizes = np.array([[image_size, image_size]], dtype=np.int64)
         elif "int32" in type_str:
-            orig_sizes = np.array([[orig_h, orig_w]], dtype=np.int32)
+            orig_sizes = np.array([[image_size, image_size]], dtype=np.int32)
         else:
-            orig_sizes = np.array([[orig_h, orig_w]], dtype=np.float32)
+            orig_sizes = np.array([[image_size, image_size]], dtype=np.float32)
 
         # Inference
         feed_dict = {
@@ -83,7 +83,7 @@ def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_t
             raise ValueError("Could not identify boxes or scores outputs from the model.")
 
         return postprocessor.postprocess_rtdetr_outputs(
-            boxes_val, scores_val, confidence_threshold, x_offset, y_offset
+            boxes_val, scores_val, confidence_threshold, orig_w, orig_h, resized_w, resized_h, x_offset, y_offset
         )
     else:
         # Inference with single image input

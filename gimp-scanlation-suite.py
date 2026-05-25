@@ -90,7 +90,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             )
             procedure.add_double_argument(
                 "confidence",
-                "_Confidence Threshold",
+                "Confidence _Threshold",
                 "Minimum model detection confidence",
                 0.0, 1.0, 0.45,
                 GObject.ParamFlags.READWRITE

@@ -87,10 +87,10 @@ def postprocess_boxes(preds, confidence_threshold, image_size, orig_w, orig_h, r
     boxes = np.column_stack([x1, y1, x2, y2]).astype(np.float32)
     return boxes, valid_confs.astype(np.float32)
 
-def postprocess_rtdetr_outputs(boxes_val, scores_val, confidence_threshold, x_offset=0, y_offset=0):
+def postprocess_rtdetr_outputs(boxes_val, scores_val, confidence_threshold, orig_w, orig_h, resized_w, resized_h, x_offset=0, y_offset=0):
     """
-    Decodes RT-DETR outputs where boxes are already scaled to target sizes.
-    Adds tile offsets and returns (boxes, confidences).
+    Decodes RT-DETR outputs where boxes are scaled to image_size.
+    Maps them to original dimensions and adds offsets.
     """
     boxes = boxes_val[0]
     scores = scores_val[0]
@@ -111,10 +111,13 @@ def postprocess_rtdetr_outputs(boxes_val, scores_val, confidence_threshold, x_of
     if len(valid_boxes) == 0:
         return np.empty((0, 4), dtype=np.float32), np.empty((0,), dtype=np.float32)
 
-    x1 = valid_boxes[:, 0] + x_offset
-    y1 = valid_boxes[:, 1] + y_offset
-    x2 = valid_boxes[:, 2] + x_offset
-    y2 = valid_boxes[:, 3] + y_offset
+    w_ratio = orig_w / resized_w
+    h_ratio = orig_h / resized_h
+
+    x1 = valid_boxes[:, 0] * w_ratio + x_offset
+    y1 = valid_boxes[:, 1] * h_ratio + y_offset
+    x2 = valid_boxes[:, 2] * w_ratio + x_offset
+    y2 = valid_boxes[:, 3] * h_ratio + y_offset
 
     final_boxes = np.column_stack([x1, y1, x2, y2]).astype(np.float32)
     return final_boxes, valid_confs.astype(np.float32)
