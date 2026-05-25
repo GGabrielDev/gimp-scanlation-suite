@@ -528,7 +528,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             grid.attach(src_lang_label, 0, 2, 1, 1)
 
             combo_src_lang = Gtk.ComboBoxText()
-            src_langs = ["Japanese", "English", "Chinese", "Korean"]
+            src_langs = ["Japanese", "English"]
             for lang in src_langs:
                 combo_src_lang.append_text(lang)
             grid.attach(combo_src_lang, 1, 2, 1, 1)
