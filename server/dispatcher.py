@@ -71,7 +71,7 @@ MODELS_CONFIG = {
     },
     "JP_Arbiter_8B": {
         "repo": "RumiaChannel/llm-jp-4-8b-thinking-uncensored-ara-gguf",
-        "file": "llm-jp-4-8b-thinking-uncensored-ara-Q8_0.gguf",
+        "file": "llm-jp-4-8b-thinking-uncensored-ara.Q8_0.gguf",
         "projector_repo": None,
         "projector_file": None,
         "local_name": "llm-jp-4-8b-thinking-uncensored-Q8.gguf",
