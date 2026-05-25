@@ -359,7 +359,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             pass
 
         # Check if the model needs to be downloaded
-        models_dir = os.path.expanduser("~/Projects/gimp-scanlation-suite/models")
+        models_dir = os.path.join(plugin_dir, "models")
         local_path = os.path.join(models_dir, filename)
         if not os.path.exists(local_path):
             Gimp.message(f"[Koharu Detector] Downloading model '{model_id}/{filename}'... This may take a moment.")
@@ -668,7 +668,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
 
         # Check local model weights presence if in Local Mode
         if inference_mode == "Local":
-            models_dir = os.path.expanduser("~/Projects/gimp-scanlation-suite/models")
+            models_dir = os.path.join(plugin_dir, "models")
             gguf_path = os.path.join(models_dir, "PaddleOCR-VL-1.5-Q4_K_M.gguf")
             projector_path = os.path.join(models_dir, "PaddleOCR-VL-1.5-mmproj.gguf")
             

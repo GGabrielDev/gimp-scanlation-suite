@@ -20,7 +20,7 @@ def ensure_model_exists(model_id, filename, local_filename=None):
     Downloads the specified model from Hugging Face hub if it doesn't already exist locally.
     Returns the absolute path to the local model file.
     """
-    models_dir = os.path.expanduser("~/Projects/gimp-scanlation-suite/models")
+    models_dir = os.path.join(plugin_dir, "models")
     os.makedirs(models_dir, exist_ok=True)
     
     target_filename = local_filename if local_filename else filename
