@@ -200,7 +200,7 @@ def list_models(task_type: str = Query(..., description="The type of pipeline ta
     Returns the list of available models supported by the server for the specified task type.
     """
     if task_type == "ocr":
-        return {"models": ["Ensemble"] + list(MODELS_CONFIG.keys())}
+        return {"models": list(MODELS_CONFIG.keys())}
     return {"models": []}
 
 @app.post("/api/v1/dispatch")

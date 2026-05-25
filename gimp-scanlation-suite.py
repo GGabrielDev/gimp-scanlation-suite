@@ -174,6 +174,13 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_boolean_argument(
+                "ensemble-consensus",
+                "_Ensemble Consensus Mode",
+                "Use the ensemble mixture of experts pipeline with the selected model as the arbiter",
+                False,
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_boolean_argument(
                 "half-to-full",
                 "_Convert Half-width to Full-width",
                 "Post-process ASCII characters to full-width CJK alternatives",
@@ -622,7 +629,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             vbox.show_all()
             
             # Render remaining free-text and checkbox arguments
-            dialog.fill(["api-url", "target-language", "half-to-full"])
+            dialog.fill(["api-url", "target-language", "ensemble-consensus", "half-to-full"])
             
             if not dialog.run():
                 return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
@@ -635,12 +642,13 @@ class GimpScanlationSuite(Gimp.PlugIn):
         target_lang = config.get_property("target-language") or "Japanese"
         source_lang = config.get_property("source-language") or "Japanese"
         material_type = config.get_property("material-type") or "manga"
+        ensemble_consensus = config.get_property("ensemble-consensus")
 
-        if inference_mode == "Local" and ocr_engine_param == "Ensemble":
+        if inference_mode == "Local" and (ocr_engine_param == "Ensemble" or ensemble_consensus):
             Gimp.message("Error: Ensemble OCR mode is only supported in Remote mode. Please start the dispatcher server and select Remote mode.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
-        Gimp.message(f"[Koharu OCR] Running in {inference_mode} mode using '{ocr_engine_param}'...")
+        Gimp.message(f"[Koharu OCR] Running in {inference_mode} mode using '{ocr_engine_param}' (Ensemble consensus={ensemble_consensus})...")
 
         # 1. Verification of active layer and engine imports
         if not drawables:
@@ -857,7 +865,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                         "material_type": material_type,
                         "half_to_full": half_to_full
                     }
-                    task_type = "ensemble_ocr" if ocr_engine_param == "Ensemble" else "ocr"
+                    task_type = "ensemble_ocr" if (ocr_engine_param == "Ensemble" or ensemble_consensus) else "ocr"
                     res = remote_client.dispatch_batch(
                         task_type,
                         ocr_engine_param,
