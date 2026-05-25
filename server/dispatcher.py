@@ -398,59 +398,59 @@ def dispatch(request: BatchRequest):
             finally:
                 unload_model("manga_ocr")
 
-            # --- PASS 2: PaddleOCR-VL-1.5 (llama.cpp) ---
+            # --- PASS 2: Expert B (olmOCR2_Q4) ---
             results_b = []
             try:
                 yield json.dumps({
                     "type": "progress",
                     "percentage": N / (3 * N),
-                    "message": "Initializing PaddleOCR..."
+                    "message": "Initializing Expert B (olmOCR2_Q4)..."
                 }) + "\n"
-                paddle = get_or_load_model("PaddleOCR")
+                expert_b = get_or_load_model("olmOCR2_Q4")
                 for idx, img_b64 in enumerate(crops_base64):
                     pct = (N + idx) / (3 * N)
                     yield json.dumps({
                         "type": "progress",
                         "percentage": pct,
-                        "message": f"Pass 2/3 (PaddleOCR): Crop {idx+1}/{N}..."
+                        "message": f"Pass 2/3 (Expert B VLM): Crop {idx+1}/{N}..."
                     }) + "\n"
                     
                     if not img_b64:
                         results_b.append("")
                         continue
                     try:
-                        paddle.reset()
+                        expert_b.reset()
                         messages = [
+                            {
+                                "role": "system",
+                                "content": "You are a precise Japanese OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
+                            },
                             {
                                 "role": "user",
                                 "content": [
                                     {"type": "image_url", "image_url": {"url": img_b64}},
-                                    {
-                                        "type": "text",
-                                        "text": "You are a precise Japanese OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not explain.\n\nPrompt: OCR:"
-                                    }
+                                    {"type": "text", "text": "OCR:"}
                                 ]
                             }
                         ]
-                        # Direct llama.cpp inference with CPU fallback
                         try:
-                            response = paddle.create_chat_completion(messages=messages)
+                            response = expert_b.create_chat_completion(messages=messages)
                         except Exception as inf_err:
                             if _n_gpu_layers_used != 0:
                                 sys.stderr.write(f"[Server Dispatcher] Expert B GPU failed. Re-routing to CPU...\n")
-                                paddle = get_or_load_model("PaddleOCR", force_cpu=True)
-                                paddle.reset()
-                                response = paddle.create_chat_completion(messages=messages)
+                                expert_b = get_or_load_model("olmOCR2_Q4", force_cpu=True)
+                                expert_b.reset()
+                                response = expert_b.create_chat_completion(messages=messages)
                             else:
                                 raise inf_err
 
                         text_b = response["choices"][0]["message"]["content"]
                         results_b.append(text_b.strip() if text_b else "")
                     except Exception as ex_b:
-                        sys.stderr.write(f"[Server Dispatcher] Expert B (PaddleOCR) error on crop {idx}: {ex_b}\n")
+                        sys.stderr.write(f"[Server Dispatcher] Expert B (olmOCR2_Q4) error on crop {idx}: {ex_b}\n")
                         results_b.append("")
             finally:
-                unload_model("PaddleOCR")
+                unload_model("olmOCR2_Q4")
 
             # --- PASS 3: Arbiter VLM Consensus ---
             final_results = []
