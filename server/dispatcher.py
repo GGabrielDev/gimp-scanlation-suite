@@ -398,15 +398,16 @@ def dispatch(request: BatchRequest):
             finally:
                 unload_model("manga_ocr")
 
-            # --- PASS 2: Expert B (olmOCR2_Q4) ---
+            # --- PASS 2: Expert B ---
             results_b = []
+            expert_b_model_id = arbiter_model_id
             try:
                 yield json.dumps({
                     "type": "progress",
                     "percentage": N / (3 * N),
-                    "message": "Initializing Expert B (olmOCR2_Q4)..."
+                    "message": f"Initializing Expert B ({expert_b_model_id})..."
                 }) + "\n"
-                expert_b = get_or_load_model("olmOCR2_Q4")
+                expert_b = get_or_load_model(expert_b_model_id)
                 for idx, img_b64 in enumerate(crops_base64):
                     pct = (N + idx) / (3 * N)
                     yield json.dumps({
@@ -438,7 +439,7 @@ def dispatch(request: BatchRequest):
                         except Exception as inf_err:
                             if _n_gpu_layers_used != 0:
                                 sys.stderr.write(f"[Server Dispatcher] Expert B GPU failed. Re-routing to CPU...\n")
-                                expert_b = get_or_load_model("olmOCR2_Q4", force_cpu=True)
+                                expert_b = get_or_load_model(expert_b_model_id, force_cpu=True)
                                 expert_b.reset()
                                 response = expert_b.create_chat_completion(messages=messages)
                             else:
@@ -447,10 +448,11 @@ def dispatch(request: BatchRequest):
                         text_b = response["choices"][0]["message"]["content"]
                         results_b.append(text_b.strip() if text_b else "")
                     except Exception as ex_b:
-                        sys.stderr.write(f"[Server Dispatcher] Expert B (olmOCR2_Q4) error on crop {idx}: {ex_b}\n")
+                        sys.stderr.write(f"[Server Dispatcher] Expert B ({expert_b_model_id}) error on crop {idx}: {ex_b}\n")
                         results_b.append("")
             finally:
-                unload_model("olmOCR2_Q4")
+                if expert_b_model_id != arbiter_model_id:
+                    unload_model(expert_b_model_id)
 
             # --- PASS 3: Arbiter VLM Consensus ---
             final_results = []
