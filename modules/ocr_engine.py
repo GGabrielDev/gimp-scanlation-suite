@@ -113,13 +113,13 @@ def extract_text_from_crops(image_crops):
         except Exception as reset_err:
             sys.stderr.write(f"[OCR Engine] Failed to reset LLM: {reset_err}\n")
             
-        # Convert numpy array to PIL Image and then base64 JPEG
+        # Convert numpy array to PIL Image and then base64 PNG
         try:
             pil_img = Image.fromarray(crop)
             buffered = io.BytesIO()
-            pil_img.save(buffered, format="JPEG")
+            pil_img.save(buffered, format="PNG")
             img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-            data_uri = f"data:image/jpeg;base64,{img_str}"
+            data_uri = f"data:image/png;base64,{img_str}"
             
             messages = [
                 {

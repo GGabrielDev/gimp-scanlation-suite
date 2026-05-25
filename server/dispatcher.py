@@ -233,10 +233,10 @@ def preprocess_for_ocr(img_b64: str) -> str:
         header, data = img_b64.split(",", 1)
         pil_img = Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
         
-        # Re-encode to b64
+        # Re-encode to b64 as lossless PNG
         buffered = io.BytesIO()
-        pil_img.save(buffered, format="JPEG")
-        return f"data:image/jpeg;base64,{base64.b64encode(buffered.getvalue()).decode()}"
+        pil_img.save(buffered, format="PNG")
+        return f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode()}"
     except Exception as e:
         import sys
         sys.stderr.write(f"[Server Dispatcher] Preprocessing error: {e}\n")
@@ -297,7 +297,7 @@ def dispatch(request: BatchRequest):
                         continue
 
                     if not img_str.startswith("data:"):
-                        img_str = f"data:image/jpeg;base64,{img_str}"
+                        img_str = f"data:image/png;base64,{img_str}"
 
                     try:
                         llm.reset()
@@ -388,7 +388,7 @@ def dispatch(request: BatchRequest):
                 crops_base64.append("")
                 continue
             if not img_str.startswith("data:"):
-                img_str = f"data:image/jpeg;base64,{img_str}"
+                img_str = f"data:image/png;base64,{img_str}"
             crops_base64.append(img_str)
 
         # Apply preprocessing (contrast boost + grayscale) before Pass 1 loop

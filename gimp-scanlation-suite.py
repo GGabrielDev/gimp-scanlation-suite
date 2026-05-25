@@ -836,13 +836,13 @@ class GimpScanlationSuite(Gimp.PlugIn):
             import time
             import threading
             
-            # Serialize crops to base64 JPEGs
-            sys.stderr.write("[Koharu OCR] Serializing crops to base64 JPEGs...\n")
+            # Serialize crops to base64 PNGs
+            sys.stderr.write("[Koharu OCR] Serializing crops to base64 PNGs...\n")
             batch_payload = []
             for crop in crops:
                 pil_img = Image.fromarray(crop)
                 buffered = io.BytesIO()
-                pil_img.save(buffered, format="JPEG")
+                pil_img.save(buffered, format="PNG")
                 img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
                 batch_payload.append(img_str)
 
