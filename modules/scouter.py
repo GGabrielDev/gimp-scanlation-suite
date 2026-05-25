@@ -14,6 +14,8 @@ import gi
 gi.require_version('Gegl', '0.4')
 from gi.repository import Gegl
 
+MODEL_IMAGE_SIZE = 1024
+
 
 def resize_image(img, new_w, new_h):
     """
@@ -125,7 +127,7 @@ def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_t
     """
     orig_h, orig_w, _ = img_np.shape
 
-    image_size = 1024
+    image_size = MODEL_IMAGE_SIZE
     if orig_w >= orig_h:
         resized_w = image_size
         resized_h = int(image_size * orig_h / orig_w)
@@ -187,6 +189,21 @@ def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_t
     return boxes, valid_confs.astype(np.float32)
 
 
+def _compute_sliding_window_starts(full_size, tile_size, step_size):
+    """
+    Compute deterministic sliding-window start coordinates that always include
+    the trailing edge window.
+    """
+    if full_size <= tile_size:
+        return [0]
+
+    last_start = full_size - tile_size
+    starts = list(range(0, last_start + 1, step_size))
+    if starts[-1] != last_start:
+        starts.append(last_start)
+    return starts
+
+
 def detect_text_bubbles(layer, confidence_threshold=0.22, nms_threshold=0.55):
     """
     Extracts GeglBuffer pixel data, runs ONNX text-bubble detector,
@@ -227,14 +244,15 @@ def detect_text_bubbles(layer, confidence_threshold=0.22, nms_threshold=0.55):
         all_boxes.append(boxes)
         all_confs.append(confs)
 
-    # Pass 2: overlapping 2x2 tiled inference for better recall on large or stylized text.
-    tile_w = max(full_w // 2 + full_w // 4, min(full_w, 1024))
-    tile_h = max(full_h // 2 + full_h // 4, min(full_h, 1024))
+    # Pass 2: overlapping model-sized tiled inference to preserve detail on
+    # high-resolution pages while still covering the full image.
+    tile_w = min(full_w, MODEL_IMAGE_SIZE)
+    tile_h = min(full_h, MODEL_IMAGE_SIZE)
     step_x = max(1, tile_w // 2)
     step_y = max(1, tile_h // 2)
 
-    x_starts = sorted(set([0, max(0, full_w - tile_w)] + list(range(0, max(1, full_w - tile_w + 1), step_x))))
-    y_starts = sorted(set([0, max(0, full_h - tile_h)] + list(range(0, max(1, full_h - tile_h + 1), step_y))))
+    x_starts = _compute_sliding_window_starts(full_w, tile_w, step_x)
+    y_starts = _compute_sliding_window_starts(full_h, tile_h, step_y)
 
     for y0 in y_starts:
         for x0 in x_starts:
