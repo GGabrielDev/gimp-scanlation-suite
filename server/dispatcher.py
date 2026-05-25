@@ -154,6 +154,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
     else:
         from llama_cpp.llama_chat_format import Llava15ChatHandler
         chat_handler = Llava15ChatHandler(clip_model_path=proj_path, verbose=False)
+        chat_handler.DEFAULT_SYSTEM_MESSAGE = None
 
     sys.stderr.write(f"[Server Dispatcher] Initializing LLM context (n_ctx={cfg['n_ctx']})...\n")
     
