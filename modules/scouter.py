@@ -1,6 +1,8 @@
 import os
 import sys
 import glob
+import urllib.request
+import urllib.parse
 import numpy as np
 
 # Bootstrapping local venv site-packages so we can import onnxruntime
@@ -15,6 +17,12 @@ gi.require_version('Gegl', '0.4')
 from gi.repository import Gegl
 
 MODEL_IMAGE_SIZE = 1024
+MODEL_FILENAME = "comic-text-detector.onnx"
+DEFAULT_MODEL_URL = (
+    "https://huggingface.co/koharu-scanlation/comic-text-detector/resolve/main/"
+    "comic-text-detector.onnx"
+)
+MODEL_DOWNLOAD_TIMEOUT_SECONDS = 60
 
 
 def resize_image(img, new_w, new_h):
@@ -204,6 +212,67 @@ def _compute_sliding_window_starts(full_size, tile_size, step_size):
     return starts
 
 
+def _download_file(url, destination):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("https", "http"):
+        raise ValueError(f"Unsupported URL scheme: {parsed.scheme}")
+
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    temp_path = f"{destination}.part"
+
+    with urllib.request.urlopen(url, timeout=MODEL_DOWNLOAD_TIMEOUT_SECONDS) as response:
+        if response.status != 200:
+            raise RuntimeError(f"HTTP status {response.status}")
+
+        with open(temp_path, "wb") as out:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+
+    os.replace(temp_path, destination)
+
+
+def _resolve_detector_model_path():
+    explicit_path = os.environ.get("KOHARU_COMIC_TEXT_DETECTOR_PATH")
+    default_model_dir = os.environ.get("KOHARU_MODELS_DIR", os.path.join(plugin_dir, "models"))
+    default_path = os.path.join(default_model_dir, MODEL_FILENAME)
+    legacy_path = os.path.expanduser("~/Projects/gimp-scanlation-suite/models/comic-text-detector.onnx")
+
+    candidate_paths = [p for p in (explicit_path, default_path, legacy_path) if p]
+    for path in candidate_paths:
+        if os.path.exists(path):
+            return path
+
+    target_path = explicit_path or default_path
+    model_url = os.environ.get("KOHARU_COMIC_TEXT_DETECTOR_URL", DEFAULT_MODEL_URL)
+    auto_download_enabled = os.environ.get("KOHARU_AUTO_DOWNLOAD_MODELS", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+
+    if not auto_download_enabled:
+        sys.stderr.write(
+            f"[Koharu Scouter] Model missing at {target_path}. Auto-download disabled.\n"
+        )
+        return None
+
+    try:
+        sys.stderr.write(
+            f"[Koharu Scouter] Model not found locally. Downloading from: {model_url}\n"
+        )
+        _download_file(model_url, target_path)
+        sys.stderr.write(f"[Koharu Scouter] Model downloaded to: {target_path}\n")
+        return target_path
+    except Exception as exc:
+        sys.stderr.write(
+            f"[Koharu Scouter] Failed to download model from {model_url}: {exc}\n"
+        )
+        return None
+
+
 def detect_text_bubbles(layer, confidence_threshold=0.22, nms_threshold=0.55):
     """
     Extracts GeglBuffer pixel data, runs ONNX text-bubble detector,
@@ -219,9 +288,8 @@ def detect_text_bubbles(layer, confidence_threshold=0.22, nms_threshold=0.55):
     img_np = np.frombuffer(raw_data, dtype=np.uint8)
     img_np = img_np.reshape((full_h, full_w, 3))
 
-    model_path = os.path.expanduser("~/Projects/gimp-scanlation-suite/models/comic-text-detector.onnx")
-    if not os.path.exists(model_path):
-        sys.stderr.write(f"[Koharu Scouter] Model file not found at: {model_path}\n")
+    model_path = _resolve_detector_model_path()
+    if not model_path:
         return []
 
     session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
