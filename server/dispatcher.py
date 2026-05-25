@@ -254,19 +254,31 @@ def dispatch(request: BatchRequest):
                 except Exception as r_err:
                     sys.stderr.write(f"[Server Dispatcher] LLM reset error: {r_err}\n")
 
-                messages = [
-                    {
-                        "role": "system",
-                        "content": "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url", "image_url": {"url": img_str}},
-                            {"type": "text", "text": prompt}
-                        ]
-                    }
-                ]
+                if MODELS_CONFIG[model].get("handler_class") == "Llava15ChatHandler":
+                    user_text = f"You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing.\n\nPrompt: {prompt}"
+                    messages = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": {"url": img_str}},
+                                {"type": "text", "text": user_text}
+                            ]
+                        }
+                    ]
+                else:
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": {"url": img_str}},
+                                {"type": "text", "text": prompt}
+                            ]
+                        }
+                    ]
 
                 try:
                     try:
@@ -356,14 +368,13 @@ def dispatch(request: BatchRequest):
                     paddle.reset()
                     messages = [
                         {
-                            "role": "system",
-                            "content": "You are a precise Japanese OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text."
-                        },
-                        {
                             "role": "user",
                             "content": [
                                 {"type": "image_url", "image_url": {"url": img_b64}},
-                                {"type": "text", "text": "OCR:"}
+                                {
+                                    "type": "text",
+                                    "text": "You are a precise Japanese OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not explain.\n\nPrompt: OCR:"
+                                }
                             ]
                         }
                     ]
@@ -411,19 +422,31 @@ def dispatch(request: BatchRequest):
                         f"Verify against the image. Output ONLY the corrected final Japanese transcription. Do not explain, translate, or conversationalize."
                     )
 
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": system_instruction
-                        },
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "image_url", "image_url": {"url": img_b64}},
-                                {"type": "text", "text": user_prompt}
-                            ]
-                        }
-                    ]
+                    if MODELS_CONFIG[arbiter_model_id].get("handler_class") == "Llava15ChatHandler":
+                        user_text = f"{system_instruction}\n\n{user_prompt}"
+                        messages = [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "image_url", "image_url": {"url": img_b64}},
+                                    {"type": "text", "text": user_text}
+                                ]
+                            }
+                        ]
+                    else:
+                        messages = [
+                            {
+                                "role": "system",
+                                "content": system_instruction
+                            },
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "image_url", "image_url": {"url": img_b64}},
+                                    {"type": "text", "text": user_prompt}
+                                ]
+                            }
+                        ]
 
                     try:
                         response = arbiter.create_chat_completion(messages=messages)
