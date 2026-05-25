@@ -159,7 +159,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
             model_path=model_path,
             chat_handler=chat_handler,
             n_ctx=cfg["n_ctx"],
-            logits_all=True,
+            logits_all=False,
             n_gpu_layers=0,
             verbose=False
         )
@@ -171,7 +171,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
                 model_path=model_path,
                 chat_handler=chat_handler,
                 n_ctx=cfg["n_ctx"],
-                logits_all=True,
+                logits_all=False,
                 n_gpu_layers=-1,
                 verbose=False
             )
@@ -183,7 +183,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
                 model_path=model_path,
                 chat_handler=chat_handler,
                 n_ctx=cfg["n_ctx"],
-                logits_all=True,
+                logits_all=False,
                 n_gpu_layers=0,
                 verbose=False
             )
