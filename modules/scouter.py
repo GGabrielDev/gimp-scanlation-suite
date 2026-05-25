@@ -35,7 +35,7 @@ def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_t
         image_size = 640
 
     # Preprocessing
-    input_data, resized_w, resized_h = preprocessor.prepare_input_tensor(img_np, image_size)
+    input_data, resized_w, resized_h, left_pad, top_pad = preprocessor.prepare_input_tensor(img_np, image_size)
 
     inputs = session.get_inputs()
     input_names = [i.name for i in inputs]
@@ -83,7 +83,7 @@ def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_t
             raise ValueError("Could not identify boxes or scores outputs from the model.")
 
         return postprocessor.postprocess_rtdetr_outputs(
-            boxes_val, scores_val, confidence_threshold, orig_w, orig_h, resized_w, resized_h, x_offset, y_offset
+            boxes_val, scores_val, confidence_threshold, orig_w, orig_h, resized_w, resized_h, left_pad, top_pad, x_offset, y_offset
         )
     else:
         # Inference with single image input
@@ -119,7 +119,7 @@ def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_t
         # Postprocessing
         return postprocessor.postprocess_boxes(
             preds, confidence_threshold, image_size, orig_w, orig_h,
-            resized_w, resized_h, x_offset, y_offset
+            resized_w, resized_h, left_pad, top_pad, x_offset, y_offset
         )
 
 

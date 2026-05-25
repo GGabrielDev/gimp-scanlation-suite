@@ -43,8 +43,8 @@ def to_grayscale(img_np):
 def prepare_input_tensor(img_np, image_size):
     """
     Resizes the image preserving aspect ratio, pads with white pixels (255) to image_size,
-    and converts to float32 NCHW tensor layout normalized to [0.0, 1.0].
-    Returns (input_tensor, resized_w, resized_h).
+    centering the image on the canvas.
+    Returns (input_tensor, resized_w, resized_h, left_pad, top_pad).
     """
     orig_h, orig_w, _ = img_np.shape
 
@@ -60,12 +60,14 @@ def prepare_input_tensor(img_np, image_size):
 
     resized_img = resize_image(img_np, resized_w, resized_h)
 
-    # Pad with white pixels (255) instead of black to prevent edge-detection failures
+    # Centered padding with white pixels (255)
     padded_img = np.full((image_size, image_size, 3), 255, dtype=np.uint8)
-    padded_img[0:resized_h, 0:resized_w, :] = resized_img
+    left_pad = (image_size - resized_w) // 2
+    top_pad = (image_size - resized_h) // 2
+    padded_img[top_pad:top_pad+resized_h, left_pad:left_pad+resized_w, :] = resized_img
 
     input_data = padded_img.astype(np.float32) / 255.0
     input_data = np.transpose(input_data, (2, 0, 1))
     input_data = np.expand_dims(input_data, axis=0)
 
-    return input_data, resized_w, resized_h
+    return input_data, resized_w, resized_h, left_pad, top_pad

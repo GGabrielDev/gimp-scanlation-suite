@@ -39,7 +39,7 @@ def nms(boxes, confidences, threshold):
 
     return keep
 
-def postprocess_boxes(preds, confidence_threshold, image_size, orig_w, orig_h, resized_w, resized_h, x_offset=0, y_offset=0):
+def postprocess_boxes(preds, confidence_threshold, image_size, orig_w, orig_h, resized_w, resized_h, left_pad, top_pad, x_offset=0, y_offset=0):
     """
     Decodes predictions, handles normalized vs pixel coordinates,
     computes bounding boxes [xmin, ymin, xmax, ymax], and maps them back
@@ -75,19 +75,23 @@ def postprocess_boxes(preds, confidence_threshold, image_size, orig_w, orig_h, r
     w = valid_preds[:, 2]
     h = valid_preds[:, 3]
 
+    # Subtract padding offsets to get coordinates relative to the resized image area
+    x_center_unpadded = x_center - left_pad
+    y_center_unpadded = y_center - top_pad
+
     w_ratio = orig_w / resized_w
     h_ratio = orig_h / resized_h
 
     bbox_dilation = 1.0
-    x1 = (x_center - w / 2.0) * w_ratio - bbox_dilation + x_offset
-    x2 = (x_center + w / 2.0) * w_ratio + bbox_dilation + x_offset
-    y1 = (y_center - h / 2.0) * h_ratio - bbox_dilation + y_offset
-    y2 = (y_center + h / 2.0) * h_ratio + bbox_dilation + y_offset
+    x1 = (x_center_unpadded - w / 2.0) * w_ratio - bbox_dilation + x_offset
+    x2 = (x_center_unpadded + w / 2.0) * w_ratio + bbox_dilation + x_offset
+    y1 = (y_center_unpadded - h / 2.0) * h_ratio - bbox_dilation + y_offset
+    y2 = (y_center_unpadded + h / 2.0) * h_ratio + bbox_dilation + y_offset
 
     boxes = np.column_stack([x1, y1, x2, y2]).astype(np.float32)
     return boxes, valid_confs.astype(np.float32)
 
-def postprocess_rtdetr_outputs(boxes_val, scores_val, confidence_threshold, orig_w, orig_h, resized_w, resized_h, x_offset=0, y_offset=0):
+def postprocess_rtdetr_outputs(boxes_val, scores_val, confidence_threshold, orig_w, orig_h, resized_w, resized_h, left_pad, top_pad, x_offset=0, y_offset=0):
     """
     Decodes RT-DETR outputs where boxes are scaled to image_size.
     Maps them to original dimensions and adds offsets.
@@ -114,10 +118,11 @@ def postprocess_rtdetr_outputs(boxes_val, scores_val, confidence_threshold, orig
     w_ratio = orig_w / resized_w
     h_ratio = orig_h / resized_h
 
-    x1 = valid_boxes[:, 0] * w_ratio + x_offset
-    y1 = valid_boxes[:, 1] * h_ratio + y_offset
-    x2 = valid_boxes[:, 2] * w_ratio + x_offset
-    y2 = valid_boxes[:, 3] * h_ratio + y_offset
+    # Subtract padding offsets to get coordinates relative to the resized image area, then scale back
+    x1 = (valid_boxes[:, 0] - left_pad) * w_ratio + x_offset
+    y1 = (valid_boxes[:, 1] - top_pad) * h_ratio + y_offset
+    x2 = (valid_boxes[:, 2] - left_pad) * w_ratio + x_offset
+    y2 = (valid_boxes[:, 3] - top_pad) * h_ratio + y_offset
 
     final_boxes = np.column_stack([x1, y1, x2, y2]).astype(np.float32)
     return final_boxes, valid_confs.astype(np.float32)
