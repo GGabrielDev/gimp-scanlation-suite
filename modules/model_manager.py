@@ -15,14 +15,16 @@ except ImportError as e:
     sys.stderr.write(f"[Model Manager] Failed to import huggingface_hub: {e}\n")
     hf_hub_download = None
 
-def ensure_model_exists(model_id, filename):
+def ensure_model_exists(model_id, filename, local_filename=None):
     """
-    Downloads the specified ONNX model from Hugging Face hub if it doesn't already exist locally.
+    Downloads the specified model from Hugging Face hub if it doesn't already exist locally.
     Returns the absolute path to the local model file.
     """
     models_dir = os.path.expanduser("~/Projects/gimp-scanlation-suite/models")
     os.makedirs(models_dir, exist_ok=True)
-    local_path = os.path.join(models_dir, filename)
+    
+    target_filename = local_filename if local_filename else filename
+    local_path = os.path.join(models_dir, target_filename)
 
     if os.path.exists(local_path):
         sys.stderr.write(f"[Model Manager] Model already exists locally at: {local_path}\n")
@@ -38,3 +40,23 @@ def ensure_model_exists(model_id, filename):
     shutil.copy2(downloaded_path, local_path)
     sys.stderr.write(f"[Model Manager] Download complete. Model saved to: {local_path}\n")
     return local_path
+
+def ensure_ocr_models_exist():
+    """
+    Downloads the PaddleOCR-VL-1.5 GGUF and vision projector model files if they do not exist locally.
+    Returns a tuple of (model_path, projector_path).
+    """
+    # 1. Main GGUF model
+    gguf_repo = "mradermacher/Fast-PaddleOCR-VL-1.5-GGUF"
+    gguf_file = "Fast-PaddleOCR-VL-1.5.Q4_K_M.gguf"
+    local_gguf = "PaddleOCR-VL-1.5-Q4_K_M.gguf"
+    
+    # 2. Vision Projector
+    projector_repo = "PaddlePaddle/PaddleOCR-VL-1.5-GGUF"
+    projector_file = "PaddleOCR-VL-1.5-mmproj.gguf"
+    local_projector = "PaddleOCR-VL-1.5-mmproj.gguf"
+    
+    model_path = ensure_model_exists(gguf_repo, gguf_file, local_filename=local_gguf)
+    projector_path = ensure_model_exists(projector_repo, projector_file, local_filename=local_projector)
+    
+    return model_path, projector_path
