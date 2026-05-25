@@ -18,7 +18,7 @@ from modules import preprocessor
 from modules import postprocessor
 
 
-def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_threshold, x_offset=0, y_offset=0):
+def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_threshold, class_filter="Text Only", x_offset=0, y_offset=0):
     """
     Run detector on a numpy image tile.
     """
@@ -62,28 +62,34 @@ def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_t
         output_names = [o.name for o in session.get_outputs()]
         output_dict = {name: val for name, val in zip(output_names, outputs)}
 
-        # Find boxes and scores outputs
+        # Find boxes, scores, and labels outputs
         boxes_val = None
         scores_val = None
+        labels_val = None
         for name, val in output_dict.items():
             if "box" in name.lower():
                 boxes_val = val
             elif "score" in name.lower():
                 scores_val = val
+            elif "label" in name.lower():
+                labels_val = val
 
         # Fallback based on shape if names don't match
-        if boxes_val is None or scores_val is None:
+        if boxes_val is None or scores_val is None or labels_val is None:
             for val in outputs:
                 if val.ndim == 3 and val.shape[2] == 4:
                     boxes_val = val
                 elif val.ndim == 2:
-                    scores_val = val
+                    if val.dtype == np.int64 or val.dtype == np.int32:
+                        labels_val = val
+                    else:
+                        scores_val = val
 
         if boxes_val is None or scores_val is None:
             raise ValueError("Could not identify boxes or scores outputs from the model.")
 
         return postprocessor.postprocess_rtdetr_outputs(
-            boxes_val, scores_val, confidence_threshold, orig_w, orig_h, resized_w, resized_h, left_pad, top_pad, x_offset, y_offset
+            boxes_val, scores_val, labels_val, confidence_threshold, orig_w, orig_h, resized_w, resized_h, left_pad, top_pad, class_filter, x_offset, y_offset
         )
     else:
         # Inference with single image input
@@ -119,7 +125,7 @@ def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_t
         # Postprocessing
         return postprocessor.postprocess_boxes(
             preds, confidence_threshold, image_size, orig_w, orig_h,
-            resized_w, resized_h, left_pad, top_pad, x_offset, y_offset
+            resized_w, resized_h, left_pad, top_pad, class_filter, x_offset, y_offset
         )
 
 
@@ -136,7 +142,7 @@ def _compute_sliding_window_starts(full_size, tile_size, step_size):
     return starts
 
 
-def detect_text_bubbles(layer, model_path, confidence_threshold=0.22, nms_threshold=0.55):
+def detect_text_bubbles(layer, model_path, confidence_threshold=0.22, nms_threshold=0.55, class_filter="Text Only"):
     """
     Extracts GeglBuffer pixel data, converts to high-contrast grayscale,
     runs ONNX text-bubble detector on full image and sliding window tiles,
@@ -178,7 +184,7 @@ def detect_text_bubbles(layer, model_path, confidence_threshold=0.22, nms_thresh
     # Pass 1: Full image detection
     boxes, confs = _run_model_on_image(
         session, input_name, img_np, confidence_threshold, nms_threshold,
-        x_offset=0, y_offset=0
+        class_filter=class_filter, x_offset=0, y_offset=0
     )
     if len(boxes) > 0:
         all_boxes.append(boxes)
@@ -205,7 +211,7 @@ def detect_text_bubbles(layer, model_path, confidence_threshold=0.22, nms_thresh
 
             tile_boxes, tile_confs = _run_model_on_image(
                 session, input_name, tile, confidence_threshold, nms_threshold,
-                x_offset=x0, y_offset=y0
+                class_filter=class_filter, x_offset=x0, y_offset=y0
             )
             if len(tile_boxes) > 0:
                 all_boxes.append(tile_boxes)

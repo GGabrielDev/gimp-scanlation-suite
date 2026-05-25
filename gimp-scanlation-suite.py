@@ -92,7 +92,14 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "confidence",
                 "Confidence _Threshold",
                 "Minimum model detection confidence",
-                0.0, 1.0, 0.45,
+                0.0, 1.0, 0.30,
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "class-filter",
+                "Class _Filter",
+                "Classes to detect: All, Text Only, Bubbles Only",
+                "Text Only",
                 GObject.ParamFlags.READWRITE
             )
             return procedure
@@ -257,6 +264,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
         # Parameters extraction
         detector_model = config.get_property("detector-model")
         confidence = config.get_property("confidence")
+        class_filter = config.get_property("class-filter")
 
         Gimp.message(f"[Koharu Detector] Running '{detector_model}' with threshold={confidence:.2f}...")
 
@@ -310,7 +318,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
         try:
-            boxes = scouter.detect_text_bubbles(active_layer, model_path, confidence_threshold=confidence)
+            boxes = scouter.detect_text_bubbles(active_layer, model_path, confidence_threshold=confidence, class_filter=class_filter)
         except Exception as e:
             # Route all exceptions/debug output to stderr to protect GIMP's wire protocol
             sys.stderr.write(f"[Koharu Detector] Inference error: {e}\n")

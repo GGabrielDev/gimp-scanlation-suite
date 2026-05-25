@@ -39,7 +39,7 @@ def nms(boxes, confidences, threshold):
 
     return keep
 
-def postprocess_boxes(preds, confidence_threshold, image_size, orig_w, orig_h, resized_w, resized_h, left_pad, top_pad, x_offset=0, y_offset=0):
+def postprocess_boxes(preds, confidence_threshold, image_size, orig_w, orig_h, resized_w, resized_h, left_pad, top_pad, class_filter="Text Only", x_offset=0, y_offset=0):
     """
     Decodes predictions, handles normalized vs pixel coordinates,
     computes bounding boxes [xmin, ymin, xmax, ymax], and maps them back
@@ -48,10 +48,32 @@ def postprocess_boxes(preds, confidence_threshold, image_size, orig_w, orig_h, r
     if preds.shape[1] < 5:
         raise ValueError(f"Detector predictions have too few columns: {preds.shape}")
 
-    # For ogkalu YOLO model, there is no objectness column. Columns 4 and 5 are class probabilities.
-    # We take the maximum probability across class columns.
-    confidences = np.max(preds[:, 4:], axis=1)
-    mask = confidences >= confidence_threshold
+    # For ogkalu YOLO model / legacy YOLO:
+    if preds.shape[1] == 6:
+        if class_filter == "Text Only":
+            confidences = preds[:, 4]  # class 0 (text)
+            mask = confidences >= confidence_threshold
+        elif class_filter == "Bubbles Only":
+            confidences = preds[:, 5]  # class 1 (bubble)
+            mask = confidences >= confidence_threshold
+        else:
+            confidences = np.max(preds[:, 4:], axis=1)
+            mask = confidences >= confidence_threshold
+    else:
+        if class_filter == "Text Only":
+            if preds.shape[1] >= 7:
+                confidences = np.max(preds[:, 5:7], axis=1)
+                mask = confidences >= confidence_threshold
+            else:
+                confidences = np.max(preds[:, 4:], axis=1)
+                mask = confidences >= confidence_threshold
+        elif class_filter == "Bubbles Only":
+            confidences = preds[:, 4]  # class 0 (bubble)
+            mask = confidences >= confidence_threshold
+        else:
+            confidences = np.max(preds[:, 4:], axis=1)
+            mask = confidences >= confidence_threshold
+
     valid_preds = preds[mask]
     valid_confs = confidences[mask]
 
@@ -64,7 +86,6 @@ def postprocess_boxes(preds, confidence_threshold, image_size, orig_w, orig_h, r
         return np.empty((0, 4), dtype=np.float32), np.empty((0,), dtype=np.float32)
 
     # Check if predictions are normalized (all coordinate columns values <= 1.01)
-    # The first 4 columns are: x_center, y_center, w, h
     is_normalized = np.max(valid_preds[:, :4]) <= 1.01
     if is_normalized:
         valid_preds = valid_preds.copy()
@@ -91,21 +112,38 @@ def postprocess_boxes(preds, confidence_threshold, image_size, orig_w, orig_h, r
     boxes = np.column_stack([x1, y1, x2, y2]).astype(np.float32)
     return boxes, valid_confs.astype(np.float32)
 
-def postprocess_rtdetr_outputs(boxes_val, scores_val, confidence_threshold, orig_w, orig_h, resized_w, resized_h, left_pad, top_pad, x_offset=0, y_offset=0):
+def postprocess_rtdetr_outputs(boxes_val, scores_val, labels_val, confidence_threshold, orig_w, orig_h, resized_w, resized_h, left_pad, top_pad, class_filter="Text Only", x_offset=0, y_offset=0):
     """
     Decodes RT-DETR outputs where boxes are scaled to image_size.
     Maps them to original dimensions and adds offsets.
     """
     boxes = boxes_val[0]
     scores = scores_val[0]
+    labels = labels_val[0] if labels_val is not None else None
 
     # If scores is 2D (e.g. [300, num_classes])
     if scores.ndim == 2:
         scores = np.max(scores, axis=-1)
 
     mask = scores >= confidence_threshold
+
+    # Apply class filter if labels are available
+    if labels is not None:
+        if class_filter == "Text Only":
+            # In ogkalu: 1 is text_bubble, 2 is text_free
+            class_mask = (labels == 1) | (labels == 2)
+            mask = mask & class_mask
+        elif class_filter == "Bubbles Only":
+            # In ogkalu: 0 is bubble
+            class_mask = (labels == 0)
+            mask = mask & class_mask
+
     valid_boxes = boxes[mask]
     valid_confs = scores[mask]
+
+    if labels is not None:
+        valid_labels = labels[mask]
+        sys.stderr.write(f"[Koharu Postprocessor] RT-DETR filtered classes: {valid_labels.tolist()}\n")
 
     sys.stderr.write(
         f"[Koharu Postprocessor] RT-DETR tile=({x_offset},{y_offset}) "
