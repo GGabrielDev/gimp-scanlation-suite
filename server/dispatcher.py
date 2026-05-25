@@ -363,7 +363,8 @@ def dispatch(request: BatchRequest):
         # ensemble_ocr Mixture of Experts pipeline
         options = request.options or {}
         source_lang = options.get("source_language") or "Japanese"
-        target_lang = options.get("target_language") or "Japanese"
+        if source_lang not in ["Japanese", "English"]:
+            source_lang = "Japanese"
         material_type = options.get("material_type") or "manga"
         half_to_full = options.get("half_to_full")
 
@@ -519,26 +520,32 @@ def dispatch(request: BatchRequest):
                     try:
                         arbiter.reset()
                         
-                        user_prompt = (
-                            f"Expert OCR transcriptions candidates:\n"
-                            f"- Candidate A: {result_a}\n"
-                            f"- Candidate B: {result_b}\n\n"
-                            f"Source Language: {source_lang}\n"
-                            f"Target Language: {target_lang}\n\n"
-                            f"Analyze the image and the candidates carefully using this step-by-step protocol in your thinking:\n"
-                            f"1. OCR Candidate Review: Compare Candidate A and Candidate B side-by-side. Note all discrepancies.\n"
-                            f"2. Image Inspection: Examine the crop's characters, layout (vertical/horizontal), handwritten sound effects, and adult moans/slang.\n"
-                            f"3. Morphological & Contextual Check: For each discrepancy, verify which transcription makes grammatical and contextual sense for the material type.\n"
-                            f"4. Consensus Synthesis: Resolve character misreadings, small kana omissions (e.g. っ, ぁ), or punctuation issues to construct the final transcription.\n\n"
-                            f"Write your step-by-step reasoning inside <thinking>...</thinking> tags, and the final corrected Japanese transcription inside <transcription>...</transcription> tags.\n\n"
-                            f"Format your output exactly as:\n"
-                            f"<thinking>\n"
-                            f"[Your analysis following the 4 steps]\n"
-                            f"</thinking>\n"
-                            f"<transcription>\n"
-                            f"[Final Japanese transcription only]\n"
-                            f"</transcription>"
-                        )
+                        if source_lang == "Japanese":
+                            user_prompt = (
+                                f"【専門OCRモデルによる読み取りデータ】\n"
+                                f"- データ A: {result_a}\n"
+                                f"- データ B: {result_b}\n\n"
+                                f"素材タイプ (Material Type): {material_type}\n\n"
+                                f"あなたはOCRエラーを修正する専門家です。提供されたデータを単に比較するのではなく、これらをベースとして使用し、指定された素材タイプの文脈、文法、および一般的なOCRの弱点（文字の欠落や誤読）を考慮して、最も正確なテキストを推論してください。\n\n"
+                                f"以下のステップで推論を行ってください：\n"
+                                f"1. データの統合: 両方のデータを分析し、素材の文脈（例：スラング、擬音語、特殊なフォーマット）に最も適した文字や単語を抽出します。\n"
+                                f"2. エラー修正: 視覚モデルがよく間違う文字（例：「ン」の欠落、濁点・半濁点の誤り、小さな仮名）を論理的に修正します。\n\n"
+                                f"ステップバイステップの推論を <thinking>...</thinking> タグ内に記述し、最終的な修正済み日本語テキストを <transcription>...</transcription> タグ内に記述してください。\n\n"
+                                f"<thinking>\n[あなたの推論]</thinking>\n<transcription>\n[最終的なテキストのみ]</transcription>"
+                            )
+                        else:
+                            user_prompt = (
+                                f"[Raw OCR Data]\n"
+                                f"- Data A: {result_a}\n"
+                                f"- Data B: {result_b}\n\n"
+                                f"Material Type: {material_type}\n\n"
+                                f"You are an expert OCR correction engine. Do not just pick between Data A and Data B. Use them as a baseline to infer the perfectly accurate transcription based on the specific context of the material type.\n\n"
+                                f"Protocol:\n"
+                                f"1. Synthesis: Analyze both readings to extract the most logical words based on the material's tone and formatting (e.g., comic book block lettering, sound effects).\n"
+                                f"2. Correction: Fix common OCR artifacts, hallucinated characters, and punctuation errors to form a coherent string.\n\n"
+                                f"Write your step-by-step reasoning inside <thinking>...</thinking> tags, and the final corrected transcription inside <transcription>...</transcription> tags.\n\n"
+                                f"<thinking>\n[Your reasoning]</thinking>\n<transcription>\n[Final text only]</transcription>"
+                            )
 
                         # Remove the image from the user_prompt payload to prevent the Visual Capture Trap
                         if MODELS_CONFIG[arbiter_model_id].get("handler_class") == "Llava15ChatHandler":
