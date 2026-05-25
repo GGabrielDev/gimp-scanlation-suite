@@ -83,14 +83,14 @@ class GimpScanlationSuite(Gimp.PlugIn):
             # Arguments
             procedure.add_string_argument(
                 "detector-model",
-                "Detector Model",
+                "_Detector Model",
                 "Model to run (e.g. ogkalu/comic-text-and-bubble-detector, PP-DocLayoutV3)",
                 "ogkalu/comic-text-and-bubble-detector",
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_double_argument(
                 "confidence",
-                "Confidence Threshold",
+                "_Confidence Threshold",
                 "Minimum model detection confidence",
                 0.0, 1.0, 0.45,
                 GObject.ParamFlags.READWRITE
@@ -116,14 +116,14 @@ class GimpScanlationSuite(Gimp.PlugIn):
             # Arguments
             procedure.add_string_argument(
                 "ocr-engine",
-                "OCR Engine",
+                "_OCR Engine",
                 "OCR engine to use (e.g. manga-ocr, mit48px-ocr, paddleocr)",
                 "manga-ocr",
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_boolean_argument(
                 "half-to-full",
-                "Convert Half-width to Full-width",
+                "_Convert Half-width to Full-width",
                 "Post-process ASCII characters to full-width CJK alternatives",
                 True,
                 GObject.ParamFlags.READWRITE
@@ -149,14 +149,14 @@ class GimpScanlationSuite(Gimp.PlugIn):
             # Arguments
             procedure.add_string_argument(
                 "inpaint-model",
-                "Inpaint Model",
+                "_Inpaint Model",
                 "Inpainting model to run (e.g. lama-manga, aot-inpainting)",
                 "lama-manga",
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_int_argument(
                 "dilation",
-                "Mask Dilation (px)",
+                "Mask _Dilation (px)",
                 "Number of pixels to expand the text mask before inpainting",
                 0, 50, 4,
                 GObject.ParamFlags.READWRITE
@@ -182,28 +182,28 @@ class GimpScanlationSuite(Gimp.PlugIn):
             # Arguments
             procedure.add_string_argument(
                 "source-lang",
-                "Source Language",
+                "_Source Language",
                 "Language to translate from",
                 "ja",
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_string_argument(
                 "target-lang",
-                "Target Language",
+                "_Target Language",
                 "Language to translate to",
                 "en",
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_string_argument(
                 "api-url",
-                "Koharu API / LLM URL",
+                "Koharu _API / LLM URL",
                 "Endpoint for local LLM or Koharu translator server",
                 "http://localhost:4000",
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_string_argument(
                 "font-family",
-                "Font Family",
+                "_Font Family",
                 "Font family to use for rendering translated text",
                 "Sans-serif",
                 GObject.ParamFlags.READWRITE

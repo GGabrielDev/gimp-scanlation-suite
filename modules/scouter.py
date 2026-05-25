@@ -37,41 +37,90 @@ def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_t
     # Preprocessing
     input_data, resized_w, resized_h = preprocessor.prepare_input_tensor(img_np, image_size)
 
-    # Inference
-    outputs = session.run(None, {input_name: input_data})
+    inputs = session.get_inputs()
+    input_names = [i.name for i in inputs]
 
-    # Implement defensive tensor slicing and dynamic logging of outputs[0] shape
-    output0 = outputs[0]
-    shape = getattr(output0, "shape", None)
-    sys.stderr.write(f"[Koharu Scouter] outputs[0] shape={shape}\n")
-
-    if shape is not None and len(shape) == 3 and shape[0] == 1:
-        if shape[2] == 6:
-            # (1, anchors, 6)
-            preds = output0[0]
-        elif shape[1] == 6:
-            # (1, 6, anchors) -> Transpose to (anchors, 6)
-            preds = output0[0].T
+    if "orig_target_sizes" in input_names:
+        # Construct orig_target_sizes input
+        orig_target_sizes_input = next(i for i in inputs if i.name == "orig_target_sizes")
+        type_str = orig_target_sizes_input.type
+        if "int64" in type_str:
+            orig_sizes = np.array([[orig_h, orig_w]], dtype=np.int64)
+        elif "int32" in type_str:
+            orig_sizes = np.array([[orig_h, orig_w]], dtype=np.int32)
         else:
-            # Fallback handling based on dimensions
-            if shape[2] == 6 or (shape[2] != 6 and shape[1] == 6):
-                preds = output0[0].T if shape[1] == 6 else output0[0]
-            else:
-                preds = output0[0].T if shape[1] < shape[2] else output0[0]
-    else:
-        # Fallback
-        preds = output0
-        if preds.ndim == 3 and preds.shape[0] == 1:
-            preds = preds[0]
-        if preds.ndim == 2:
-            if preds.shape[1] != 6 and preds.shape[0] == 6:
-                preds = preds.T
+            orig_sizes = np.array([[orig_h, orig_w]], dtype=np.float32)
 
-    # Postprocessing
-    return postprocessor.postprocess_boxes(
-        preds, confidence_threshold, image_size, orig_w, orig_h,
-        resized_w, resized_h, x_offset, y_offset
-    )
+        # Inference
+        feed_dict = {
+            input_name: input_data,
+            "orig_target_sizes": orig_sizes
+        }
+        outputs = session.run(None, feed_dict)
+
+        # Map outputs to a dictionary by name
+        output_names = [o.name for o in session.get_outputs()]
+        output_dict = {name: val for name, val in zip(output_names, outputs)}
+
+        # Find boxes and scores outputs
+        boxes_val = None
+        scores_val = None
+        for name, val in output_dict.items():
+            if "box" in name.lower():
+                boxes_val = val
+            elif "score" in name.lower():
+                scores_val = val
+
+        # Fallback based on shape if names don't match
+        if boxes_val is None or scores_val is None:
+            for val in outputs:
+                if val.ndim == 3 and val.shape[2] == 4:
+                    boxes_val = val
+                elif val.ndim == 2:
+                    scores_val = val
+
+        if boxes_val is None or scores_val is None:
+            raise ValueError("Could not identify boxes or scores outputs from the model.")
+
+        return postprocessor.postprocess_rtdetr_outputs(
+            boxes_val, scores_val, confidence_threshold, x_offset, y_offset
+        )
+    else:
+        # Inference with single image input
+        outputs = session.run(None, {input_name: input_data})
+
+        # Implement defensive tensor slicing and dynamic logging of outputs[0] shape
+        output0 = outputs[0]
+        shape = getattr(output0, "shape", None)
+        sys.stderr.write(f"[Koharu Scouter] outputs[0] shape={shape}\n")
+
+        if shape is not None and len(shape) == 3 and shape[0] == 1:
+            if shape[2] == 6:
+                # (1, anchors, 6)
+                preds = output0[0]
+            elif shape[1] == 6:
+                # (1, 6, anchors) -> Transpose to (anchors, 6)
+                preds = output0[0].T
+            else:
+                # Fallback handling based on dimensions
+                if shape[2] == 6 or (shape[2] != 6 and shape[1] == 6):
+                    preds = output0[0].T if shape[1] == 6 else output0[0]
+                else:
+                    preds = output0[0].T if shape[1] < shape[2] else output0[0]
+        else:
+            # Fallback
+            preds = output0
+            if preds.ndim == 3 and preds.shape[0] == 1:
+                preds = preds[0]
+            if preds.ndim == 2:
+                if preds.shape[1] != 6 and preds.shape[0] == 6:
+                    preds = preds.T
+
+        # Postprocessing
+        return postprocessor.postprocess_boxes(
+            preds, confidence_threshold, image_size, orig_w, orig_h,
+            resized_w, resized_h, x_offset, y_offset
+        )
 
 
 def _compute_sliding_window_starts(full_size, tile_size, step_size):

@@ -86,3 +86,36 @@ def postprocess_boxes(preds, confidence_threshold, image_size, orig_w, orig_h, r
 
     boxes = np.column_stack([x1, y1, x2, y2]).astype(np.float32)
     return boxes, valid_confs.astype(np.float32)
+
+def postprocess_rtdetr_outputs(boxes_val, scores_val, confidence_threshold, x_offset=0, y_offset=0):
+    """
+    Decodes RT-DETR outputs where boxes are already scaled to target sizes.
+    Adds tile offsets and returns (boxes, confidences).
+    """
+    boxes = boxes_val[0]
+    scores = scores_val[0]
+
+    # If scores is 2D (e.g. [300, num_classes])
+    if scores.ndim == 2:
+        scores = np.max(scores, axis=-1)
+
+    mask = scores >= confidence_threshold
+    valid_boxes = boxes[mask]
+    valid_confs = scores[mask]
+
+    sys.stderr.write(
+        f"[Koharu Postprocessor] RT-DETR tile=({x_offset},{y_offset}) "
+        f"total_preds={len(boxes)} valid_preds={len(valid_boxes)} threshold={confidence_threshold:.2f}\n"
+    )
+
+    if len(valid_boxes) == 0:
+        return np.empty((0, 4), dtype=np.float32), np.empty((0,), dtype=np.float32)
+
+    x1 = valid_boxes[:, 0] + x_offset
+    y1 = valid_boxes[:, 1] + y_offset
+    x2 = valid_boxes[:, 2] + x_offset
+    y2 = valid_boxes[:, 3] + y_offset
+
+    final_boxes = np.column_stack([x1, y1, x2, y2]).astype(np.float32)
+    return final_boxes, valid_confs.astype(np.float32)
+
