@@ -227,6 +227,10 @@ def dispatch(request: BatchRequest):
 
         messages = [
             {
+                "role": "system",
+                "content": "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
+            },
+            {
                 "role": "user",
                 "content": [
                     {"type": "image_url", "image_url": {"url": img_str}},

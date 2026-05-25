@@ -804,9 +804,47 @@ class GimpScanlationSuite(Gimp.PlugIn):
                     ocr_results.append(normalized_text)
                     sys.stderr.write(f"[Koharu OCR] Region {i} bounding box {box} -> '{normalized_text}'\n")
 
+        # Create GIMP text layers for the recognized text blocks
+        try:
+            # Look for an existing "OCR Transcriptions" layer group and delete it to prevent overlays
+            group_name = "OCR Transcriptions"
+            for layer in image.get_layers():
+                if layer.get_name() == group_name:
+                    image.remove_layer(layer)
+                    break
+
+            # Create new Layer Group
+            if hasattr(Gimp, "GroupLayer"):
+                group_layer = Gimp.GroupLayer.new(image)
+                group_layer.set_name(group_name)
+                image.insert_layer(group_layer, None, -1)
+            else:
+                group_layer = None
+        except Exception as group_err:
+            sys.stderr.write(f"[Koharu OCR] Failed to create layer group: {group_err}\n")
+            group_layer = None
+
+        # Insert text layers for each recognized box
+        for i, text in enumerate(ocr_results):
+            if not text.strip():
+                continue
+            box = valid_boxes[i]
+            xmin, ymin, xmax, ymax = box
+            
+            try:
+                # Create GIMP text layer (image, text, font name, size, unit)
+                text_layer = Gimp.TextLayer.new(image, text, "Sans-serif", 18, Gimp.Unit.pixel())
+                if text_layer:
+                    # Set position/offsets
+                    text_layer.set_offsets(int(xmin), int(ymin))
+                    # Add to the group layer (parent) if it was successfully created, otherwise root stack
+                    image.insert_layer(text_layer, group_layer, -1)
+            except Exception as layer_err:
+                sys.stderr.write(f"[Koharu OCR] Failed to create text layer for region {i}: {layer_err}\n")
+
         # Display summary message
         non_empty = [t for t in ocr_results if t.strip()]
-        Gimp.message(f"OCR Complete! Processed {len(valid_boxes)} regions, recognized {len(non_empty)} text blocks.")
+        Gimp.message(f"OCR Complete! Processed {len(valid_boxes)} regions, recognized {len(non_empty)} text blocks.\nText layers added to the 'OCR Transcriptions' group.")
         
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
