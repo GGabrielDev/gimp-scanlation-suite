@@ -336,6 +336,14 @@ def dispatch(request: BatchRequest):
         # Resolve prompt dictionary instructions
         from server.prompt_dictionary import PROMPT_DICTIONARY
         system_instruction = PROMPT_DICTIONARY.get(material_type, PROMPT_DICTIONARY["manga"])
+        # Adapt system instruction dynamically to support reasoning
+        system_instruction = system_instruction.replace(
+            "Output ONLY the finalized Japanese transcription. No explanations, no translations, no chatty remarks.",
+            "Analyze the candidates against the image. Provide step-by-step reasoning inside <thinking>...</thinking> tags, then output the finalized transcription inside <transcription>...</transcription> tags."
+        ).replace(
+            "Output ONLY the finalized transcription. No explanations, no translations, no chatty remarks.",
+            "Analyze the candidates against the image. Provide step-by-step reasoning inside <thinking>...</thinking> tags, then output the finalized transcription inside <transcription>...</transcription> tags."
+        )
 
         # Determine Arbiter VLM Model ID
         arbiter_model_id = model
@@ -487,7 +495,14 @@ def dispatch(request: BatchRequest):
                             f"- Candidate B: {result_b}\n\n"
                             f"Source Language: {source_lang}\n"
                             f"Target Language: {target_lang}\n\n"
-                            f"Verify against the image. Output ONLY the corrected final Japanese transcription. Do not explain, translate, or conversationalize."
+                            f"Analyze the image and the candidates. Provide your step-by-step reasoning explaining character shapes, speech bubble context, or errors in Candidate A/B inside <thinking>...</thinking> tags. Then, provide the final corrected Japanese transcription inside <transcription>...</transcription> tags.\n\n"
+                            f"Format your output exactly as:\n"
+                            f"<thinking>\n"
+                            f"[Your analysis]\n"
+                            f"</thinking>\n"
+                            f"<transcription>\n"
+                            f"[Final Japanese transcription only]\n"
+                            f"</transcription>"
                         )
 
                         if MODELS_CONFIG[arbiter_model_id].get("handler_class") == "Llava15ChatHandler":
@@ -528,8 +543,36 @@ def dispatch(request: BatchRequest):
                                 raise inf_err
 
                         text_final = response["choices"][0]["message"]["content"]
-                        final_results.append(text_final.strip() if text_final else "")
-                        sys.stderr.write(f"[Server Dispatcher] Ensemble crop {idx} final: '{result_a}' / '{result_b}' -> '{text_final.strip()}'\n")
+                        
+                        # Parse <thinking> and <transcription> tags
+                        thinking = ""
+                        transcription = text_final.strip() if text_final else ""
+                        
+                        if text_final:
+                            if "<thinking>" in text_final and "</thinking>" in text_final:
+                                try:
+                                    thinking = text_final.split("<thinking>")[1].split("</thinking>")[0].strip()
+                                except Exception:
+                                    pass
+                            
+                            if "<transcription>" in text_final and "</transcription>" in text_final:
+                                try:
+                                    transcription = text_final.split("<transcription>")[1].split("</transcription>")[0].strip()
+                                except Exception:
+                                    pass
+                            elif "<thinking>" in text_final and "</thinking>" in text_final:
+                                try:
+                                    transcription = text_final.split("</thinking>")[1].strip()
+                                except Exception:
+                                    pass
+                                    
+                            transcription = transcription.replace("<transcription>", "").replace("</transcription>", "").strip()
+                        
+                        if thinking:
+                            sys.stderr.write(f"\n[Server Dispatcher] Crop {idx} Thinking:\n---\n{thinking}\n---\n")
+                            
+                        final_results.append(transcription)
+                        sys.stderr.write(f"[Server Dispatcher] Ensemble crop {idx} final: '{result_a}' / '{result_b}' -> '{transcription}'\n")
                     except Exception as ex_c:
                         sys.stderr.write(f"[Server Dispatcher] Arbiter consensus error on crop {idx}: {ex_c}\n")
                         final_results.append(result_a or result_b or "") # fallback to any expert
