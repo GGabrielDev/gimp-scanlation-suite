@@ -57,14 +57,18 @@ CMAKE_ARGS="-DGGML_VULKAN=on" pip install llama-cpp-python==0.3.23
 ```
 
 > [!IMPORTANT]
-> **Vulkan Build Requirement (`glslc`)**:
-> Compiling `llama-cpp-python` with Vulkan requires the Vulkan shader compiler `glslc` to compile compute shaders (`.comp.cpp` files). If you get a CMake build error in `mul_mat_vec.comp.cpp` or similar files, install the shader compiler:
-> - **Ubuntu/Debian**: `sudo apt update && sudo apt install -y glslc` (or `sudo apt install -y shaderc`)
-> - **Arch Linux**: `sudo pacman -S shaderc`
-> - **Fedora/RHEL**: `sudo dnf install shaderc`
-> - **macOS (Vulkan via MoltenVK)**: `brew install shaderc`
-> - **Other / Manual**: Install the official [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) which includes `glslc`.
-> Make sure `glslc` is in your system `PATH` before running the `pip install` command.
+> **Vulkan Build Requirements**:
+> Compiling `llama-cpp-python` with Vulkan requires the Vulkan shader compiler (`glslc`), Vulkan development headers, and SPIR-V headers. If you get a CMake build error (such as missing `spirv/unified1/spirv.hpp` or `vulkan/vulkan.h`), install the required system libraries:
+> - **Ubuntu/Debian**:
+>   ```bash
+>   sudo apt update
+>   sudo apt install -y glslc libvulkan-dev spirv-headers
+>   # Note: On older releases, glslc is provided by: sudo apt install -y shaderc
+>   ```
+> - **Arch Linux**: `sudo pacman -S shaderc vulkan-headers spirv-headers`
+> - **Fedora/RHEL**: `sudo dnf install shaderc vulkan-headers spirv-headers`
+> - **macOS (Vulkan via MoltenVK)**: `brew install shaderc spirv-headers`
+> - **Other / Manual**: Install the official [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) which includes `glslc` and all headers.
 
 #### **For Apple Silicon (Metal)**:
 ```bash
