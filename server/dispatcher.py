@@ -280,16 +280,18 @@ def parse_arbiter_output(text_final: str) -> tuple[str, str]:
     if tx_match:
         transcription = tx_match.group(1).strip()
     else:
-        # Fallbacks if no explicit transcription tag found
-        if think_match:
-            # If there is a thinking block, transcription might be the text outside of it
-            remain = text_final.replace(think_match.group(0), "").strip()
-            # Clean any dangling tags
-            remain = re.sub(r'</?(?:thinking|transcription|transcripition|transcribe|output|result)>', '', remain, flags=re.IGNORECASE)
-            transcription = remain.strip()
+        # Fallback 1: Has opening transcription tag but no closing tag (or cut off)
+        tx_open = re.search(r'<(?:transcription|transcripition|transcribe|output|result)>', text_final, re.IGNORECASE)
+        if tx_open:
+            transcription = text_final[tx_open.end():].strip()
         else:
-            # No tags at all, just return the whole text
-            transcription = text_final.strip()
+            # Fallback 2: No transcription tag at all, use text outside thinking
+            if think_match:
+                remain = text_final.replace(think_match.group(0), "").strip()
+                transcription = remain.strip()
+            else:
+                # Fallback 3: No tags at all, use whole text
+                transcription = text_final.strip()
 
     # Clean up thinking text by removing the transcription content and tags if nested
     if thinking:
@@ -302,9 +304,22 @@ def parse_arbiter_output(text_final: str) -> tuple[str, str]:
         if transcription:
             thinking = thinking.replace(transcription, "").strip()
 
-    # Final cleanup of any lingering tags in transcription
+    # Clean up special system/assistant tokens
     if transcription:
-        transcription = re.sub(r'</?(?:transcription|transcripition|transcribe|output|result)>', '', transcription, flags=re.IGNORECASE).strip()
+        # Remove any <|...|> tokens
+        transcription = re.sub(r'<\|.*?\|>', '', transcription).strip()
+        # Remove any tags
+        transcription = re.sub(r'</?(?:transcription|transcripition|transcribe|output|result|thinking)>', '', transcription, flags=re.IGNORECASE).strip()
+        
+        # Heuristic for conversational garbage:
+        # If there are multiple lines, extract the last non-empty line
+        lines = [l.strip() for l in transcription.split('\n') if l.strip()]
+        if len(lines) > 1:
+            last_line = lines[-1]
+            last_line_clean = last_line.strip('"\'「」')
+            # If the last line is not conversational instruction and is short, prefer it
+            if not any(word in last_line.lower() for word in ["ensure", "transcribe", "output", "thinking", "explanation", "tag", "produce", "data"]):
+                transcription = last_line_clean
 
     return thinking, transcription
 
