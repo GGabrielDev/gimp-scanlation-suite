@@ -25,13 +25,12 @@ PROMPT_DICTIONARY = {
         "5. Output ONLY the finalized Japanese transcription. No explanations, no translations, no chatty remarks."
     ),
     "doujinshi_nsfw": (
-        "You are a precise Japanese Adult/NSFW Doujinshi OCR post-processor. These mature fan-made works contain explicit dialogue, mature terms, sexual slang, panting sounds, and phonetic moan/groan annotations (e.g. 'んっ', 'あっ', 'はぅ', 'ふぅ', 'くぅ', 'んあっ').\n"
-        "Follow these guidelines:\n"
-        "1. Transcribe sexual slang, mature terminology, and vulgar terms accurately as shown in the image.\n"
-        "2. Do not omit or censor explicit or adult text.\n"
-        "3. Pay close attention to small kana and breathy annotations denoting groaning, panting, or moaning (e.g. 'んっ', 'ぁっ', 'はーっ', 'くっ').\n"
-        "4. Transcribe handwriting and sound effects overlaid on drawings.\n"
-        "5. Output ONLY the finalized Japanese transcription. No explanations, no translations, no chatty remarks."
+        "You are a precise Japanese Adult/NSFW Doujinshi OCR post-processor. These mature fan-made works contain explicit dialogue, mature terms, sexual slang, panting sounds, and phonetic moan/groan annotations.\n"
+        "CRITICAL RULES:\n"
+        "1. Never drop the character 'ン' (n) from explicit slang like 'おマンコ' (o-manko) or 'チンポ' (chinpo). Vision models frequently miss the 'ン' due to tight kerning. If Candidate A or B includes it and it fits the sexual context, you MUST include it.\n"
+        "2. Pay close attention to dakuten (voiced marks like ぶ vs ふ). If a candidate suggests a physical sound effect like 'ぶるんっ' (burun/jiggling), do not hallucinate unrelated nouns like 'おれんじ' (orange).\n"
+        "3. Preserve all small kana denoting breathiness (e.g., 'んっ', 'ぁっ', 'はーっ').\n"
+        "4. Output ONLY the finalized Japanese transcription. No explanations, no translations, no chatty remarks."
     ),
     "comic": (
         "You are a precise Comic Book OCR post-processor. Western/translated comics use horizontal text layouts, blocky uppercase lettering, and sound effect lettering integrated into the art.\n"

@@ -208,6 +208,28 @@ def list_models(task_type: str = Query(..., description="The type of pipeline ta
         return {"models": list(MODELS_CONFIG.keys())}
     return {"models": []}
 
+def preprocess_for_ocr(img_b64: str) -> str:
+    """Bumps contrast and converts to grayscale to make dakuten and squeezed characters pop."""
+    import base64
+    import io
+    from PIL import Image, ImageEnhance
+    try:
+        header, data = img_b64.split(",", 1)
+        pil_img = Image.open(io.BytesIO(base64.b64decode(data))).convert("L") # Convert to grayscale
+        
+        # Drastically increase contrast to separate squeezed strokes
+        enhancer = ImageEnhance.Contrast(pil_img)
+        pil_img = enhancer.enhance(2.5) 
+        
+        # Re-encode to b64
+        buffered = io.BytesIO()
+        pil_img.save(buffered, format="JPEG")
+        return f"data:image/jpeg;base64,{base64.b64encode(buffered.getvalue()).decode()}"
+    except Exception as e:
+        import sys
+        sys.stderr.write(f"[Server Dispatcher] Preprocessing error: {e}\n")
+        return img_b64
+
 @app.post("/api/v1/dispatch")
 def dispatch(request: BatchRequest):
     """
@@ -364,6 +386,9 @@ def dispatch(request: BatchRequest):
                 img_str = f"data:image/jpeg;base64,{img_str}"
             crops_base64.append(img_str)
 
+        # Apply preprocessing (contrast boost + grayscale) before Pass 1 loop
+        crops_base64 = [preprocess_for_ocr(crop) if crop else "" for crop in crops_base64]
+
         sys.stderr.write(f"[Server Dispatcher] Starting Ensemble OCR Consensus on {len(crops_base64)} crops (Arbiter={arbiter_model_id}, Type={material_type})...\n")
 
         def event_generator():
@@ -510,13 +535,13 @@ def dispatch(request: BatchRequest):
                             f"</transcription>"
                         )
 
+                        # Remove the image from the user_prompt payload to prevent the Visual Capture Trap
                         if MODELS_CONFIG[arbiter_model_id].get("handler_class") == "Llava15ChatHandler":
                             user_text = f"{system_instruction}\n\n{user_prompt}"
                             messages = [
                                 {
                                     "role": "user",
                                     "content": [
-                                        {"type": "image_url", "image_url": {"url": img_b64}},
                                         {"type": "text", "text": user_text}
                                     ]
                                 }
@@ -530,7 +555,6 @@ def dispatch(request: BatchRequest):
                                 {
                                     "role": "user",
                                     "content": [
-                                        {"type": "image_url", "image_url": {"url": img_b64}},
                                         {"type": "text", "text": user_prompt}
                                     ]
                                 }
