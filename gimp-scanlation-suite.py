@@ -201,6 +201,20 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "Japanese",
                 GObject.ParamFlags.READWRITE
             )
+            procedure.add_string_argument(
+                "source-language",
+                "_Source Language",
+                "Language of the source text",
+                "Japanese",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "material-type",
+                "_Material Type",
+                "Type of media (manga, doujinshi, doujinshi_nsfw, comic, light_novel)",
+                "manga",
+                GObject.ParamFlags.READWRITE
+            )
             return procedure
 
         elif name == "gimp-scanlation-inpaint":
@@ -499,6 +513,30 @@ class GimpScanlationSuite(Gimp.PlugIn):
             
             combo_model = Gtk.ComboBoxText()
             grid.attach(combo_model, 1, 1, 1, 1)
+
+            # Source Language Select
+            src_lang_label = Gtk.Label()
+            src_lang_label.set_markup("<b>Source Language:</b>")
+            src_lang_label.set_xalign(0.0)
+            grid.attach(src_lang_label, 0, 2, 1, 1)
+
+            combo_src_lang = Gtk.ComboBoxText()
+            src_langs = ["Japanese", "English", "Chinese", "Korean"]
+            for lang in src_langs:
+                combo_src_lang.append_text(lang)
+            grid.attach(combo_src_lang, 1, 2, 1, 1)
+
+            # Material Type Select
+            material_label = Gtk.Label()
+            material_label.set_markup("<b>Material Type:</b>")
+            material_label.set_xalign(0.0)
+            grid.attach(material_label, 0, 3, 1, 1)
+
+            combo_material = Gtk.ComboBoxText()
+            materials = ["manga", "doujinshi", "doujinshi_nsfw", "comic", "light_novel"]
+            for mat in materials:
+                combo_material.append_text(mat)
+            grid.attach(combo_material, 1, 3, 1, 1)
             
             vbox.pack_start(grid, False, False, 0)
             
@@ -508,6 +546,18 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 combo_inf.set_active(1)
             else:
                 combo_inf.set_active(0)
+
+            src_val = config.get_property("source-language") or "Japanese"
+            if src_val in src_langs:
+                combo_src_lang.set_active(src_langs.index(src_val))
+            else:
+                combo_src_lang.set_active(0)
+
+            mat_val = config.get_property("material-type") or "manga"
+            if mat_val in materials:
+                combo_material.set_active(materials.index(mat_val))
+            else:
+                combo_material.set_active(0)
                 
             # Populating dropdown safely in the idle loop
             def populate_dropdown(models):
@@ -554,6 +604,20 @@ class GimpScanlationSuite(Gimp.PlugIn):
                     
             combo_model.connect("changed", on_model_changed)
 
+            def on_src_lang_changed(widget):
+                val = widget.get_active_text()
+                if val:
+                    config.set_property("source-language", val)
+
+            combo_src_lang.connect("changed", on_src_lang_changed)
+
+            def on_material_changed(widget):
+                val = widget.get_active_text()
+                if val:
+                    config.set_property("material-type", val)
+
+            combo_material.connect("changed", on_material_changed)
+
             update_model_dropdown()
             vbox.show_all()
             
@@ -569,6 +633,12 @@ class GimpScanlationSuite(Gimp.PlugIn):
         inference_mode = config.get_property("inference-mode") or "Local"
         api_url = config.get_property("api-url") or "http://localhost:7890"
         target_lang = config.get_property("target-language") or "Japanese"
+        source_lang = config.get_property("source-language") or "Japanese"
+        material_type = config.get_property("material-type") or "manga"
+
+        if inference_mode == "Local" and ocr_engine_param == "Ensemble":
+            Gimp.message("Error: Ensemble OCR mode is only supported in Remote mode. Please start the dispatcher server and select Remote mode.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
         Gimp.message(f"[Koharu OCR] Running in {inference_mode} mode using '{ocr_engine_param}'...")
 
@@ -773,8 +843,14 @@ class GimpScanlationSuite(Gimp.PlugIn):
 
             def worker():
                 try:
-                    options = {"target_language": target_lang}
-                    res = remote_client.dispatch_batch("ocr", ocr_engine_param, batch_payload, api_url, options=options)
+                    options = {
+                        "target_language": target_lang,
+                        "source_language": source_lang,
+                        "material_type": material_type,
+                        "half_to_full": half_to_full
+                    }
+                    task_type = "ensemble_ocr" if ocr_engine_param == "Ensemble" else "ocr"
+                    res = remote_client.dispatch_batch(task_type, ocr_engine_param, batch_payload, api_url, options=options)
                     result_container.append(res)
                 except Exception as ex:
                     error_container.append(ex)
