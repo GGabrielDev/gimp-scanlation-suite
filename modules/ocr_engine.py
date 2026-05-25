@@ -46,7 +46,7 @@ def get_ocr_engine_instance():
     sys.stderr.write("[OCR Engine] Initializing PaddleOCR-VL model...\n")
     
     # PaddleOCR-VL needs enough context for the image embeddings and the prompt.
-    n_ctx = 2048
+    n_ctx = 4096
     
     try:
         sys.stderr.write("[OCR Engine] Trying GPU offloading (n_gpu_layers=-1)...\n")
@@ -90,6 +90,12 @@ def extract_text_from_crops(image_crops):
     for i, crop in enumerate(image_crops):
         sys.stderr.write(f"[OCR Engine] Processing crop {i+1}/{len(image_crops)}...\n")
         
+        # Reset LLM state before each crop to clear the KV cache
+        try:
+            llm.reset()
+        except Exception as reset_err:
+            sys.stderr.write(f"[OCR Engine] Failed to reset LLM: {reset_err}\n")
+            
         # Convert numpy array to PIL Image and then base64 JPEG
         try:
             pil_img = Image.fromarray(crop)
