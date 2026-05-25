@@ -83,6 +83,15 @@ Install the remaining packages listed in `requirements.txt`:
 pip install -r server/requirements.txt
 ```
 
+> [!TIP]
+> **AMD GPU PyTorch Acceleration (ROCm)**:
+> The standard `requirements.txt` installation pulls the default PyTorch package, which will execute on the **CPU** by default on AMD systems. Because `manga-ocr` is very small (~300MB), CPU inference is extremely fast and works out of the box.
+> If you explicitly want PyTorch to run with hardware acceleration on your AMD GPU, install the ROCm-enabled PyTorch build:
+> ```bash
+> pip install torch --index-url https://download.pytorch.org/whl/rocm6.0
+> ```
+
+
 ---
 
 ## Running the Server
