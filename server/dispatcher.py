@@ -242,6 +242,72 @@ def preprocess_for_ocr(img_b64: str) -> str:
         sys.stderr.write(f"[Server Dispatcher] Preprocessing error: {e}\n")
         return img_b64
 
+def parse_arbiter_output(text_final: str) -> tuple[str, str]:
+    """
+    Robustly parses <thinking> and <transcription> tags from model output.
+    Handles common typos (like <transcripition>) and nested tags.
+    """
+    import re
+    if not text_final:
+        return "", ""
+
+    # 1. Try to find transcription content with regex (handling common typos)
+    tx_match = re.search(
+        r'<(?:transcription|transcripition|transcribe|output|result)>(.*?)</(?:transcription|transcripition|transcribe|output|result)>',
+        text_final,
+        re.DOTALL | re.IGNORECASE
+    )
+
+    # 2. Try to find thinking content with regex
+    think_match = re.search(r'<thinking>(.*?)</thinking>', text_final, re.DOTALL | re.IGNORECASE)
+
+    thinking = ""
+    if think_match:
+        thinking = think_match.group(1).strip()
+    else:
+        # Fallback if no closing </thinking> but has opening <thinking>
+        think_open = re.search(r'<thinking>(.*)', text_final, re.DOTALL | re.IGNORECASE)
+        if think_open:
+            content = think_open.group(1)
+            # Stop at opening transcription tag if present
+            tx_open = re.search(r'<(?:transcription|transcripition|transcribe|output|result)>', content, re.IGNORECASE)
+            if tx_open:
+                thinking = content[:tx_open.start()].strip()
+            else:
+                thinking = content.strip()
+
+    transcription = ""
+    if tx_match:
+        transcription = tx_match.group(1).strip()
+    else:
+        # Fallbacks if no explicit transcription tag found
+        if think_match:
+            # If there is a thinking block, transcription might be the text outside of it
+            remain = text_final.replace(think_match.group(0), "").strip()
+            # Clean any dangling tags
+            remain = re.sub(r'</?(?:thinking|transcription|transcripition|transcribe|output|result)>', '', remain, flags=re.IGNORECASE)
+            transcription = remain.strip()
+        else:
+            # No tags at all, just return the whole text
+            transcription = text_final.strip()
+
+    # Clean up thinking text by removing the transcription content and tags if nested
+    if thinking:
+        thinking = re.sub(
+            r'</?(?:transcription|transcripition|transcribe|output|result)>',
+            '',
+            thinking,
+            flags=re.IGNORECASE
+        ).strip()
+        if transcription:
+            thinking = thinking.replace(transcription, "").strip()
+
+    # Final cleanup of any lingering tags in transcription
+    if transcription:
+        transcription = re.sub(r'</?(?:transcription|transcripition|transcribe|output|result)>', '', transcription, flags=re.IGNORECASE).strip()
+
+    return thinking, transcription
+
 @app.post("/api/v1/dispatch")
 def dispatch(request: BatchRequest):
     """
@@ -596,29 +662,8 @@ def dispatch(request: BatchRequest):
 
                         text_final = response["choices"][0]["message"]["content"]
                         
-                        # Parse <thinking> and <transcription> tags
-                        thinking = ""
-                        transcription = text_final.strip() if text_final else ""
-                        
-                        if text_final:
-                            if "<thinking>" in text_final and "</thinking>" in text_final:
-                                try:
-                                    thinking = text_final.split("<thinking>")[1].split("</thinking>")[0].strip()
-                                except Exception:
-                                    pass
-                            
-                            if "<transcription>" in text_final and "</transcription>" in text_final:
-                                try:
-                                    transcription = text_final.split("<transcription>")[1].split("</transcription>")[0].strip()
-                                except Exception:
-                                    pass
-                            elif "<thinking>" in text_final and "</thinking>" in text_final:
-                                try:
-                                    transcription = text_final.split("</thinking>")[1].strip()
-                                except Exception:
-                                    pass
-                                    
-                            transcription = transcription.replace("<transcription>", "").replace("</transcription>", "").strip()
+                        # Parse <thinking> and <transcription> tags using robust parser
+                        thinking, transcription = parse_arbiter_output(text_final)
                         
                         if thinking:
                             sys.stderr.write(f"\n[Server Dispatcher] Crop {idx} Thinking:\n---\n{thinking}\n---\n")
