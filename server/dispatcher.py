@@ -559,6 +559,7 @@ def dispatch(request: BatchRequest):
                             }
                             if enable_thinking:
                                 payload["thinking"] = {"type": "enabled"}
+                                payload["reasoning_effort"] = "high"
                             else:
                                 payload["thinking"] = {"type": "disabled"}
                                 payload["temperature"] = 0.2
@@ -808,6 +809,7 @@ def dispatch(request: BatchRequest):
                     result_b = results_b[idx]
 
                     try:
+                        reasoning = ""
                         if source_lang == "Japanese":
                             user_prompt = (
                                 f"【専門OCRモデルによる読み取りデータ】\n"
@@ -860,6 +862,7 @@ def dispatch(request: BatchRequest):
                             }
                             if enable_thinking:
                                 payload["thinking"] = {"type": "enabled"}
+                                payload["reasoning_effort"] = "high"
                             else:
                                 payload["thinking"] = {"type": "disabled"}
                                 payload["temperature"] = 0.2
@@ -929,6 +932,10 @@ def dispatch(request: BatchRequest):
                         # Parse <thinking> and <transcription> tags using robust parser
                         thinking, transcription = parse_arbiter_output(text_final)
                         
+                        if MODELS_CONFIG.get(arbiter_model_id, {}).get("handler_class") == "DeepSeekAPI" and enable_thinking:
+                            if reasoning:
+                                thinking = reasoning
+
                         if thinking:
                             sys.stderr.write(f"\n[Server Dispatcher] Crop {idx} Thinking:\n---\n{thinking}\n---\n")
                             
