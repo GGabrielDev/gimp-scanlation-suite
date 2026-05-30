@@ -17,6 +17,34 @@ venv_paths = [
 if venv_paths:
     sys.path.insert(0, venv_paths[0])
 
+# Try to load environment variables from a .env file if it exists
+def load_dotenv():
+    # Check common locations for .env
+    env_paths = [
+        os.path.join(plugin_dir, ".env"),
+        os.path.join(os.path.dirname(os.path.realpath(__file__)), ".env"),
+        ".env"
+    ]
+    for path in env_paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if "=" in line:
+                            key, val = line.split("=", 1)
+                            # Remove quotes from value if present
+                            val = val.strip().strip('"\'')
+                            os.environ[key.strip()] = val
+                sys.stderr.write(f"[Server Dispatcher] Loaded environment variables from: {path}\n")
+                break
+            except Exception as e:
+                sys.stderr.write(f"[Server Dispatcher] Failed to read .env file at {path}: {e}\n")
+
+load_dotenv()
+
 app = FastAPI(title="Koharu Universal Remote Dispatch Server")
 
 # Payload Schema
