@@ -1,11 +1,5 @@
 import os
 import sys
-import gc
-import json
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
 
 # Bootstrapping local venv site-packages so we can import llama-cpp and modules
 plugin_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -16,6 +10,13 @@ venv_paths = [
 ]
 if venv_paths:
     sys.path.insert(0, venv_paths[0])
+
+import gc
+import json
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 # Try to load environment variables from a .env file if it exists
 def load_dotenv():
