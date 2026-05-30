@@ -689,8 +689,9 @@ def dispatch(request: BatchRequest):
 
             # --- PASS 2: Expert B ---
             results_b = []
-            # Expert B must be a vision model; if the arbiter is text-only, we fall back to PaddleOCR_Manga
-            expert_b_model_id = "PaddleOCR_Manga" if MODELS_CONFIG.get(arbiter_model_id, {}).get("handler_class") == "TextOnly" else arbiter_model_id
+            # Expert B must be a vision model; if the arbiter is text-only or API-based, we fall back to PaddleOCR_Manga
+            is_vision_model = MODELS_CONFIG.get(arbiter_model_id, {}).get("handler_class") not in ["TextOnly", "DeepSeekAPI"]
+            expert_b_model_id = arbiter_model_id if is_vision_model else "PaddleOCR_Manga"
             try:
                 yield json.dumps({
                     "type": "progress",
