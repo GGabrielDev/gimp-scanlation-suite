@@ -79,6 +79,16 @@ MODELS_CONFIG = {
         "handler_class": "TextOnly",
         "n_ctx": 8192,
         "n_gpu_layers": -1
+    },
+    "DeepSeek": {
+        "repo": None,
+        "file": None,
+        "projector_repo": None,
+        "projector_file": None,
+        "local_name": None,
+        "local_projector_name": None,
+        "handler_class": "DeepSeekAPI",
+        "n_ctx": 4096
     }
 }
 
@@ -129,6 +139,12 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         _loaded_models["manga_ocr"] = mocr
         _current_loaded_model_id = "manga_ocr"
         return mocr
+
+    if model_id == "DeepSeek":
+        # Force unload other models
+        for other in list(_loaded_models.keys()):
+            unload_model(other)
+        return None
         
     if model_id not in MODELS_CONFIG:
         raise ValueError(f"Model ID '{model_id}' is not registered in the server config.")
@@ -350,16 +366,42 @@ def dispatch(request: BatchRequest):
 
         def event_generator():
             global _n_gpu_layers_used
-            try:
-                llm = get_or_load_model(model)
-            except Exception as e:
-                yield json.dumps({"type": "progress", "percentage": 0.0, "message": f"Error: Failed to load model: {e}"}) + "\n"
-                raise RuntimeError(f"Failed to load model: {e}")
-
             options = request.options or {}
             target_lang = options.get("target_language")
-            prompt = f"OCR: (Language: {target_lang})" if target_lang else "OCR:"
+            source_lang = options.get("source_language") or "Japanese"
+            material_type = options.get("material_type") or "manga"
 
+            if model == "DeepSeek":
+                raw_ocr_model_id = "manga_ocr" if source_lang.lower() == "japanese" else "PaddleOCR_Manga"
+                yield json.dumps({
+                    "type": "progress",
+                    "percentage": 0.0,
+                    "message": f"Initializing raw OCR model ({raw_ocr_model_id}) for DeepSeek..."
+                }) + "\n"
+                try:
+                    raw_ocr_model = get_or_load_model(raw_ocr_model_id)
+                except Exception as e:
+                    yield json.dumps({"type": "progress", "percentage": 0.0, "message": f"Error: Failed to load raw OCR model: {e}"}) + "\n"
+                    raise RuntimeError(f"Failed to load raw OCR model: {e}")
+
+                api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+                if not api_key:
+                    yield json.dumps({
+                        "type": "progress",
+                        "percentage": 0.0,
+                        "message": "Error: DEEPSEEK_API_KEY environment variable is not set."
+                    }) + "\n"
+                    raise ValueError("DEEPSEEK_API_KEY environment variable is not set.")
+
+                llm = None
+            else:
+                try:
+                    llm = get_or_load_model(model)
+                except Exception as e:
+                    yield json.dumps({"type": "progress", "percentage": 0.0, "message": f"Error: Failed to load model: {e}"}) + "\n"
+                    raise RuntimeError(f"Failed to load model: {e}")
+
+            prompt = f"OCR: (Language: {target_lang})" if target_lang else "OCR:"
             sys.stderr.write(f"[Server Dispatcher] Processing single-model batch of size {len(request.batch_payload)} with prompt='{prompt}'...\n")
             results = []
             N = len(request.batch_payload)
@@ -380,54 +422,150 @@ def dispatch(request: BatchRequest):
                     if not img_str.startswith("data:"):
                         img_str = f"data:image/png;base64,{img_str}"
 
-                    try:
-                        llm.reset()
-                    except Exception as r_err:
-                        sys.stderr.write(f"[Server Dispatcher] LLM reset error: {r_err}\n")
-
-                    if MODELS_CONFIG[model].get("handler_class") == "Llava15ChatHandler":
-                        user_text = f"You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing.\n\nPrompt: {prompt}"
-                        messages = [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "image_url", "image_url": {"url": img_str}},
-                                    {"type": "text", "text": user_text}
-                                ]
-                            }
-                        ]
-                    else:
-                        messages = [
-                            {
-                                "role": "system",
-                                "content": "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
-                            },
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "image_url", "image_url": {"url": img_str}},
-                                    {"type": "text", "text": prompt}
-                                ]
-                            }
-                        ]
-
-                    try:
+                    if model == "DeepSeek":
                         try:
-                            response = llm.create_chat_completion(messages=messages)
-                        except Exception as inf_err:
-                            if _n_gpu_layers_used != 0:
-                                sys.stderr.write(f"[Server Dispatcher] GPU execution failed: {inf_err}. Re-routing to CPU...\n")
-                                llm = get_or_load_model(model, force_cpu=True)
-                                llm.reset()
-                                response = llm.create_chat_completion(messages=messages)
+                            # 1. Run Raw OCR on crop
+                            header, data = img_str.split(",", 1)
+                            pil_img = Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
+                            
+                            if raw_ocr_model_id == "manga_ocr":
+                                text_raw = raw_ocr_model(pil_img).strip()
                             else:
-                                raise inf_err
+                                raw_ocr_model.reset()
+                                messages = [
+                                    {
+                                        "role": "system",
+                                        "content": "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
+                                    },
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "image_url", "image_url": {"url": img_str}},
+                                            {"type": "text", "text": "OCR:"}
+                                        ]
+                                    }
+                                ]
+                                response = raw_ocr_model.create_chat_completion(messages=messages)
+                                text_raw = response["choices"][0]["message"]["content"].strip()
+                            
+                            sys.stderr.write(f"[Server Dispatcher] DeepSeek Pipeline - Raw OCR text: '{text_raw}'\n")
+                            
+                            if not text_raw:
+                                results.append("")
+                                continue
 
-                        text = response["choices"][0]["message"]["content"]
-                        results.append(text.strip())
-                    except Exception as e:
-                        sys.stderr.write(f"[Server Dispatcher] Error during OCR inference on item {idx}: {e}\n")
-                        results.append("")
+                            # 2. Run DeepSeek API Correction
+                            import requests
+                            api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
+                            api_base = api_base.rstrip("/")
+                            url = f"{api_base}/chat/completions"
+
+                            lang_name = "日本語" if source_lang.lower() == "japanese" else source_lang
+
+                            if source_lang.lower() == "japanese":
+                                system_prompt = (
+                                    f"あなたは{material_type}の非常に正確なテキスト校正およびOCRポストプロセスのアシスタントです。 "
+                                    f"あなたの仕事は、提供された原材料から取得した{lang_name}のテキストの誤字脱字やOCR読み取りエラーを校正・修正することです。 "
+                                    "テキストの翻訳は行わないでください。出力は元の言語の修正後のテキストのみにしてください。 "
+                                    "説明や対話的な表現、余計なマークダウンは一切含めないでください。"
+                                )
+                                user_prompt = (
+                                    f"校正対象の生OCRテキスト:\n"
+                                    f"\"\"\"\n"
+                                    f"{text_raw}\n"
+                                    f"\"\"\"\n\n"
+                                    f"元の意味とレイアウトを維持したまま、修正された{lang_name}のテキストのみを出力してください。 "
+                                    "テキストがすでに正確であるか、修正が必要ない場合は、生OCRテキストをそのまま出力してください。"
+                                )
+                            else:
+                                system_prompt = (
+                                    f"You are a precise text editor and OCR post-processing assistant for {material_type}. "
+                                    f"Your job is to correct and refine raw OCR text transcribed from the source language {lang_name}. "
+                                    "Do NOT translate the text. Output ONLY the corrected text in the original language. "
+                                    "Do not add any explanations, markdown formatting, or conversational filler."
+                                )
+                                user_prompt = (
+                                    f"Raw OCR text to correct:\n"
+                                    f"\"\"\"\n"
+                                    f"{text_raw}\n"
+                                    f"\"\"\"\n\n"
+                                    f"Please output ONLY the corrected {lang_name} text, maintaining the original meaning and layout. "
+                                    f"If the text is already correct or there is nothing to correct, output the raw text as-is."
+                                )
+
+                            headers = {
+                                "Authorization": f"Bearer {api_key}",
+                                "Content-Type": "application/json"
+                            }
+                            payload = {
+                                "model": "deepseek-chat",
+                                "messages": [
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": user_prompt}
+                                ],
+                                "temperature": 0.2
+                            }
+                            
+                            response = requests.post(url, json=payload, headers=headers, timeout=30.0)
+                            response.raise_for_status()
+                            res_json = response.json()
+                            corrected_text = res_json["choices"][0]["message"]["content"].strip()
+                            corrected_text = corrected_text.strip().strip('"\'')
+                            sys.stderr.write(f"[Server Dispatcher] DeepSeek Pipeline - Corrected text: '{corrected_text}'\n")
+                            results.append(corrected_text)
+                            
+                        except Exception as ocr_err:
+                            sys.stderr.write(f"[Server Dispatcher] Error during DeepSeek OCR pipeline on item {idx}: {ocr_err}\n")
+                            results.append(text_raw if 'text_raw' in locals() else "")
+                    else:
+                        try:
+                            llm.reset()
+                        except Exception as r_err:
+                            sys.stderr.write(f"[Server Dispatcher] LLM reset error: {r_err}\n")
+
+                        if MODELS_CONFIG[model].get("handler_class") == "Llava15ChatHandler":
+                            user_text = f"You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing.\n\nPrompt: {prompt}"
+                            messages = [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "image_url", "image_url": {"url": img_str}},
+                                        {"type": "text", "text": user_text}
+                                    ]
+                                }
+                            ]
+                        else:
+                            messages = [
+                                {
+                                    "role": "system",
+                                    "content": "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
+                                },
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "image_url", "image_url": {"url": img_str}},
+                                        {"type": "text", "text": prompt}
+                                    ]
+                                }
+                            ]
+
+                        try:
+                            try:
+                                response = llm.create_chat_completion(messages=messages)
+                            except Exception as inf_err:
+                                if _n_gpu_layers_used != 0:
+                                    sys.stderr.write(f"[Server Dispatcher] GPU execution failed: {inf_err}. Re-routing to CPU...\n")
+                                    llm = get_or_load_model(model, force_cpu=True)
+                                    llm.reset()
+                                    response = llm.create_chat_completion(messages=messages)
+                                else:
+                                    raise inf_err
+
+                            text = response["choices"][0]["message"]["content"]
+                            results.append(text.strip())
+                        except Exception as e:
+                            sys.stderr.write(f"[Server Dispatcher] Error during OCR inference on item {idx}: {e}\n")
+                            results.append("")
 
                 yield json.dumps({
                     "type": "progress",
@@ -436,7 +574,10 @@ def dispatch(request: BatchRequest):
                 }) + "\n"
                 yield json.dumps({"type": "result", "results": results}) + "\n"
             finally:
-                unload_model(model)
+                if model == "DeepSeek":
+                    unload_model(raw_ocr_model_id)
+                else:
+                    unload_model(model)
 
         return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
@@ -599,8 +740,6 @@ def dispatch(request: BatchRequest):
                     result_b = results_b[idx]
 
                     try:
-                        arbiter.reset()
-                        
                         if source_lang == "Japanese":
                             user_prompt = (
                                 f"【専門OCRモデルによる読み取りデータ】\n"
@@ -628,54 +767,85 @@ def dispatch(request: BatchRequest):
                                 f"<thinking>\n[Your reasoning]</thinking>\n<transcription>\n[Final text only]</transcription>"
                             )
 
-                        # Remove the image from the user_prompt payload to prevent the Visual Capture Trap
-                        if MODELS_CONFIG[arbiter_model_id].get("handler_class") == "TextOnly":
-                            messages = [
-                                {
-                                    "role": "system",
-                                    "content": system_instruction
-                                },
-                                {
-                                    "role": "user",
-                                    "content": user_prompt
-                                }
-                            ]
-                        elif MODELS_CONFIG[arbiter_model_id].get("handler_class") == "Llava15ChatHandler":
-                            user_text = f"{system_instruction}\n\n{user_prompt}"
-                            messages = [
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {"type": "text", "text": user_text}
-                                    ]
-                                }
-                            ]
+                        if arbiter_model_id == "DeepSeek":
+                            import requests
+                            api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+                            if not api_key:
+                                raise ValueError("DEEPSEEK_API_KEY environment variable is not set.")
+                            
+                            api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
+                            api_base = api_base.rstrip("/")
+                            url = f"{api_base}/chat/completions"
+
+                            headers = {
+                                "Authorization": f"Bearer {api_key}",
+                                "Content-Type": "application/json"
+                            }
+                            
+                            payload = {
+                                "model": "deepseek-chat",
+                                "messages": [
+                                    {"role": "system", "content": system_instruction},
+                                    {"role": "user", "content": user_prompt}
+                                ],
+                                "temperature": 0.2
+                            }
+                            
+                            response = requests.post(url, json=payload, headers=headers, timeout=30.0)
+                            response.raise_for_status()
+                            res_json = response.json()
+                            text_final = res_json["choices"][0]["message"]["content"]
                         else:
-                            messages = [
-                                {
-                                    "role": "system",
-                                    "content": system_instruction
-                                },
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {"type": "text", "text": user_prompt}
-                                    ]
-                                }
-                            ]
-
-                        try:
-                            response = arbiter.create_chat_completion(messages=messages, temperature=0.2, max_tokens=2048)
-                        except Exception as inf_err:
-                            if _n_gpu_layers_used != 0:
-                                sys.stderr.write(f"[Server Dispatcher] Arbiter VLM GPU execution failed. Re-routing to CPU...\n")
-                                arbiter = get_or_load_model(arbiter_model_id, force_cpu=True)
-                                arbiter.reset()
-                                response = arbiter.create_chat_completion(messages=messages, temperature=0.2, max_tokens=2048)
+                            arbiter.reset()
+                            
+                            # Remove the image from the user_prompt payload to prevent the Visual Capture Trap
+                            if MODELS_CONFIG[arbiter_model_id].get("handler_class") == "TextOnly":
+                                messages = [
+                                    {
+                                        "role": "system",
+                                        "content": system_instruction
+                                    },
+                                    {
+                                        "role": "user",
+                                        "content": user_prompt
+                                    }
+                                ]
+                            elif MODELS_CONFIG[arbiter_model_id].get("handler_class") == "Llava15ChatHandler":
+                                user_text = f"{system_instruction}\n\n{user_prompt}"
+                                messages = [
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "text", "text": user_text}
+                                        ]
+                                    }
+                                ]
                             else:
-                                raise inf_err
+                                messages = [
+                                    {
+                                        "role": "system",
+                                        "content": system_instruction
+                                    },
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "text", "text": user_prompt}
+                                        ]
+                                    }
+                                ]
 
-                        text_final = response["choices"][0]["message"]["content"]
+                            try:
+                                response = arbiter.create_chat_completion(messages=messages, temperature=0.2, max_tokens=2048)
+                            except Exception as inf_err:
+                                if _n_gpu_layers_used != 0:
+                                    sys.stderr.write(f"[Server Dispatcher] Arbiter VLM GPU execution failed. Re-routing to CPU...\n")
+                                    arbiter = get_or_load_model(arbiter_model_id, force_cpu=True)
+                                    arbiter.reset()
+                                    response = arbiter.create_chat_completion(messages=messages, temperature=0.2, max_tokens=2048)
+                                else:
+                                    raise inf_err
+
+                            text_final = response["choices"][0]["message"]["content"]
                         
                         # Parse <thinking> and <transcription> tags using robust parser
                         thinking, transcription = parse_arbiter_output(text_final)
@@ -688,8 +858,10 @@ def dispatch(request: BatchRequest):
                     except Exception as ex_c:
                         sys.stderr.write(f"[Server Dispatcher] Arbiter consensus error on crop {idx}: {ex_c}\n")
                         final_results.append(result_a or result_b or "") # fallback to any expert
+                    
             finally:
-                unload_model(arbiter_model_id)
+                if arbiter_model_id != "DeepSeek":
+                    unload_model(arbiter_model_id)
 
             yield json.dumps({
                 "type": "progress",

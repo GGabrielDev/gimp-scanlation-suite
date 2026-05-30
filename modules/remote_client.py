@@ -7,7 +7,7 @@ def get_available_models(task_type, api_url):
     Queries the remote dispatcher server for a list of available models for a given task type.
     Falls back to a default list if the server is offline or returns an error.
     """
-    fallback_models = ["PaddleOCR", "olmOCR2_Q4", "olmOCR2_Q6", "olmOCR2_Q8"]
+    fallback_models = ["PaddleOCR", "olmOCR2_Q4", "olmOCR2_Q6", "olmOCR2_Q8", "DeepSeek"]
     
     if not api_url:
         return fallback_models
