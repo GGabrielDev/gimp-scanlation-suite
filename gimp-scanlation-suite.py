@@ -619,13 +619,28 @@ class GimpScanlationSuite(Gimp.PlugIn):
             thinking_val = config.get_property("enable-thinking")
             chk_thinking.set_active(thinking_val)
             
+            # Fetch the GIMP procedure dialog's auto-generated ensemble-consensus checkbutton
+            chk_ensemble = dialog.get_widget("ensemble-consensus", GObject.TYPE_NONE)
+            
             # Thinking sensitivity logic
             def update_thinking_sensitivity():
-                engine = config.get_property("ocr-engine") or ""
-                arbiter = config.get_property("consensus-arbiter") or ""
-                # Enable toggle only for DeepSeek models
-                is_ds = any("deepseek" in m.lower() for m in [engine, arbiter])
+                is_ensemble = chk_ensemble.get_active()
+                if is_ensemble:
+                    active_model = config.get_property("consensus-arbiter") or ""
+                else:
+                    active_model = config.get_property("ocr-engine") or ""
+                is_ds = "deepseek" in active_model.lower()
                 chk_thinking.set_sensitive(is_ds)
+                
+            # Toggle sensitivity of single-model vs. consensus selectors based on checkbox
+            def update_consensus_sensitivity(widget=None):
+                is_ensemble = chk_ensemble.get_active()
+                combo_model.set_sensitive(not is_ensemble)
+                combo_expert_b.set_sensitive(is_ensemble)
+                combo_arbiter.set_sensitive(is_ensemble)
+                update_thinking_sensitivity()
+
+            chk_ensemble.connect("toggled", update_consensus_sensitivity)
                 
             # Populating dropdown safely in the idle loop
             def populate_dropdown(models):
@@ -670,6 +685,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                         combo_arbiter.set_active(0)
                 
                 update_thinking_sensitivity()
+                update_consensus_sensitivity()
                 return False
 
             import threading
