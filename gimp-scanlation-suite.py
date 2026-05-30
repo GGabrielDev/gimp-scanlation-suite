@@ -243,6 +243,13 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 False,
                 GObject.ParamFlags.READWRITE
             )
+            procedure.add_boolean_argument(
+                "configure-per-path",
+                "_Configure Options Per Path",
+                "Review each text block, toggle reasoning per-path, and add context hints before processing",
+                False,
+                GObject.ParamFlags.READWRITE
+            )
             return procedure
 
         elif name == "gimp-scanlation-inpaint":
@@ -759,7 +766,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             vbox.show_all()
             
             # Render remaining free-text and checkbox arguments
-            dialog.fill(["api-url", "target-language", "ensemble-consensus", "half-to-full"])
+            dialog.fill(["api-url", "target-language", "ensemble-consensus", "configure-per-path", "half-to-full"])
             
             if not dialog.run():
                 return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
@@ -776,6 +783,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
         consensus_expert_b = config.get_property("consensus-expert-b") or "PaddleOCR_Manga"
         consensus_arbiter = config.get_property("consensus-arbiter") or "DeepSeek"
         enable_thinking = config.get_property("enable-thinking")
+        configure_per_path = config.get_property("configure-per-path")
 
         if inference_mode == "Local" and (ocr_engine_param == "Ensemble" or ensemble_consensus):
             Gimp.message("Error: Ensemble OCR mode is only supported in Remote mode. Please start the dispatcher server and select Remote mode.")
@@ -940,6 +948,133 @@ class GimpScanlationSuite(Gimp.PlugIn):
 
         ocr_results = []
 
+        # Initialize per-path options
+        per_path_options = []
+        for _ in range(len(crops)):
+            per_path_options.append({
+                "enable_thinking": enable_thinking,
+                "context_hint": ""
+            })
+
+        if inference_mode == "Remote" and configure_per_path and run_mode == Gimp.RunMode.INTERACTIVE:
+            from gi.repository import GdkPixbuf
+            import io
+            from PIL import Image
+
+            def numpy_to_pixbuf(np_arr, max_width=120, max_height=80):
+                pil_img = Image.fromarray(np_arr)
+                pil_img.thumbnail((max_width, max_height))
+                buffered = io.BytesIO()
+                pil_img.save(buffered, format="PNG")
+                
+                loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+                loader.write(buffered.getvalue())
+                loader.close()
+                return loader.get_pixbuf()
+
+            desc_dialog = Gtk.Dialog(title="Configure Options Per Text Block", parent=None, flags=0)
+            desc_dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
+            desc_dialog.set_default_size(650, 480)
+
+            content_area = desc_dialog.get_content_area()
+            
+            lbl = Gtk.Label()
+            lbl.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Per-Block Configuration</span>")
+            lbl.set_margin_top(12)
+            lbl.set_margin_bottom(6)
+            lbl.set_xalign(0.0)
+            lbl.set_margin_start(12)
+            content_area.pack_start(lbl, False, False, 0)
+            
+            sub_lbl = Gtk.Label()
+            sub_lbl.set_text("Review cropped images, override reasoning, or add custom context/hints per block.")
+            sub_lbl.set_margin_bottom(12)
+            sub_lbl.set_xalign(0.0)
+            sub_lbl.set_margin_start(12)
+            content_area.pack_start(sub_lbl, False, False, 0)
+
+            scrolled = Gtk.ScrolledWindow()
+            scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scrolled.set_margin_start(12)
+            scrolled.set_margin_end(12)
+            scrolled.set_margin_bottom(12)
+            
+            list_grid = Gtk.Grid()
+            list_grid.set_column_spacing(18)
+            list_grid.set_row_spacing(18)
+            list_grid.set_margin_top(6)
+            list_grid.set_margin_bottom(6)
+            list_grid.set_margin_start(6)
+            list_grid.set_margin_end(6)
+            
+            h_img = Gtk.Label()
+            h_img.set_markup("<b>Preview</b>")
+            h_img.set_xalign(0.0)
+            list_grid.attach(h_img, 0, 0, 1, 1)
+            
+            h_reason = Gtk.Label()
+            h_reason.set_markup("<b>Enable Reasoning</b>")
+            h_reason.set_xalign(0.0)
+            list_grid.attach(h_reason, 1, 0, 1, 1)
+            
+            h_hint = Gtk.Label()
+            h_hint.set_markup("<b>Additional Context Hint</b>")
+            h_hint.set_xalign(0.0)
+            list_grid.attach(h_hint, 2, 0, 1, 1)
+
+            rows_widgets = []
+            
+            is_ds = False
+            active_model = consensus_arbiter if (ocr_engine_param == "Ensemble" or ensemble_consensus) else ocr_engine_param
+            if active_model and "deepseek" in active_model.lower():
+                is_ds = True
+
+            for idx, crop in enumerate(crops):
+                row_idx = idx + 1
+                
+                try:
+                    pixbuf = numpy_to_pixbuf(crop)
+                    img_widget = Gtk.Image.new_from_pixbuf(pixbuf)
+                except Exception as ex_pb:
+                    img_widget = Gtk.Label(label="[No Preview]")
+                
+                img_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+                img_box.pack_start(img_widget, False, False, 0)
+                img_box.set_size_request(120, 80)
+                list_grid.attach(img_box, 0, row_idx, 1, 1)
+                
+                chk_row = Gtk.CheckButton()
+                chk_row.set_active(enable_thinking)
+                chk_row.set_sensitive(is_ds)
+                
+                chk_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+                chk_box.pack_start(chk_row, False, False, 0)
+                list_grid.attach(chk_box, 1, row_idx, 1, 1)
+                
+                entry_hint = Gtk.Entry()
+                entry_hint.set_placeholder_text("e.g. whispering, sound effect, screaming")
+                entry_hint.set_width_chars(30)
+                
+                hint_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+                hint_box.pack_start(entry_hint, True, True, 0)
+                list_grid.attach(hint_box, 2, row_idx, 1, 1)
+                
+                rows_widgets.append((chk_row, entry_hint))
+
+            scrolled.add(list_grid)
+            content_area.pack_start(scrolled, True, True, 0)
+            
+            desc_dialog.show_all()
+            response = desc_dialog.run()
+            if response == Gtk.ResponseType.OK:
+                for idx, (chk_row, entry_hint) in enumerate(rows_widgets):
+                    per_path_options[idx]["enable_thinking"] = chk_row.get_active()
+                    per_path_options[idx]["context_hint"] = entry_hint.get_text().strip()
+                desc_dialog.destroy()
+            else:
+                desc_dialog.destroy()
+                return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
+
         # 5. Run inference depending on mode
         if inference_mode == "Local":
             # Run local inference sequentially
@@ -972,12 +1107,18 @@ class GimpScanlationSuite(Gimp.PlugIn):
             # Serialize crops to base64 PNGs
             sys.stderr.write("[Koharu OCR] Serializing crops to base64 PNGs...\n")
             batch_payload = []
-            for crop in crops:
+            for idx, crop in enumerate(crops):
                 pil_img = Image.fromarray(crop)
                 buffered = io.BytesIO()
                 pil_img.save(buffered, format="PNG")
                 img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-                batch_payload.append(img_str)
+                
+                item_options = per_path_options[idx] if idx < len(per_path_options) else {}
+                batch_payload.append({
+                    "image_data": img_str,
+                    "enable_thinking": item_options.get("enable_thinking", enable_thinking),
+                    "context_hint": item_options.get("context_hint", "")
+                })
 
             result_container = []
             error_container = []

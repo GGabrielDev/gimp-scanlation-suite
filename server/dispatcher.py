@@ -513,6 +513,9 @@ def dispatch(request: BatchRequest):
                             url = f"{api_base}/chat/completions"
 
                             lang_name = "日本語" if source_lang.lower() == "japanese" else source_lang
+                            enable_thinking_global = options.get("enable_thinking", False)
+                            enable_thinking_item = item.get("enable_thinking", enable_thinking_global) if isinstance(item, dict) else enable_thinking_global
+                            context_hint_item = item.get("context_hint", "") if isinstance(item, dict) else ""
 
                             if source_lang.lower() == "japanese":
                                 system_prompt = (
@@ -526,6 +529,10 @@ def dispatch(request: BatchRequest):
                                     f"\"\"\"\n"
                                     f"{text_raw}\n"
                                     f"\"\"\"\n\n"
+                                )
+                                if context_hint_item:
+                                    user_prompt += f"このテキストの追加の文脈情報/ヒント: {context_hint_item}\n\n"
+                                user_prompt += (
                                     f"元の意味とレイアウトを維持したまま、修正された{lang_name}のテキストのみを出力してください。 "
                                     "テキストがすでに正確であるか、修正が必要ない場合は、生OCRテキストをそのまま出力してください。"
                                 )
@@ -541,6 +548,10 @@ def dispatch(request: BatchRequest):
                                     f"\"\"\"\n"
                                     f"{text_raw}\n"
                                     f"\"\"\"\n\n"
+                                )
+                                if context_hint_item:
+                                    user_prompt += f"Additional Context Hint for this text: {context_hint_item}\n\n"
+                                user_prompt += (
                                     f"Please output ONLY the corrected {lang_name} text, maintaining the original meaning and layout. "
                                     f"If the text is already correct or there is nothing to correct, output the raw text as-is."
                                 )
@@ -549,7 +560,6 @@ def dispatch(request: BatchRequest):
                                 "Authorization": f"Bearer {api_key}",
                                 "Content-Type": "application/json"
                             }
-                            enable_thinking = options.get("enable_thinking", False)
                             payload = {
                                 "model": MODELS_CONFIG.get(model, {}).get("model_name", "deepseek-chat"),
                                 "messages": [
@@ -557,7 +567,7 @@ def dispatch(request: BatchRequest):
                                     {"role": "user", "content": user_prompt}
                                 ]
                             }
-                            if enable_thinking:
+                            if enable_thinking_item:
                                 payload["thinking"] = {"type": "enabled"}
                                 payload["reasoning_effort"] = "high"
                             else:
@@ -688,6 +698,7 @@ def dispatch(request: BatchRequest):
         def event_generator():
             global _n_gpu_layers_used
             nonlocal expert_b_model_id
+            enable_thinking = options.get("enable_thinking", False)
             N = len(crops_base64)
             if N == 0:
                 yield json.dumps({"type": "progress", "percentage": 1.0, "message": "No crops to process."}) + "\n"
@@ -811,12 +822,20 @@ def dispatch(request: BatchRequest):
 
                     try:
                         reasoning = ""
+                        item = request.batch_payload[idx] if isinstance(request.batch_payload[idx], dict) else {}
+                        enable_thinking_item = item.get("enable_thinking", enable_thinking)
+                        context_hint_item = item.get("context_hint", "")
+
                         if source_lang == "Japanese":
                             user_prompt = (
                                 f"【専門OCRモデルによる読み取りデータ】\n"
                                 f"- データ A: {result_a}\n"
                                 f"- データ B: {result_b}\n\n"
                                 f"素材タイプ (Material Type): {material_type}\n\n"
+                            )
+                            if context_hint_item:
+                                user_prompt += f"このテキストの追加の文脈情報/ヒント: {context_hint_item}\n\n"
+                            user_prompt += (
                                 f"あなたはOCRエラーを修正する専門家です。提供されたデータを単に比較するのではなく、これらをベースとして使用し、指定された素材タイプの文脈、文法、および一般的なOCRの弱点（文字の欠落や誤読）を考慮して、最も正確なテキストを推論してください。\n\n"
                                 f"以下のステップで推論を行ってください：\n"
                                 f"1. データの統合: 両方のデータを分析し、素材の文脈（例：スラング、擬音語、特殊なフォーマット）に最も適した文字や単語を抽出します。\n"
@@ -830,6 +849,10 @@ def dispatch(request: BatchRequest):
                                 f"- Data A: {result_a}\n"
                                 f"- Data B: {result_b}\n\n"
                                 f"Material Type: {material_type}\n\n"
+                            )
+                            if context_hint_item:
+                                user_prompt += f"Additional Context Hint for this text: {context_hint_item}\n\n"
+                            user_prompt += (
                                 f"You are an expert OCR correction engine. Do not just pick between Data A and Data B. Use them as a baseline to infer the perfectly accurate transcription based on the specific context of the material type.\n\n"
                                 f"Protocol:\n"
                                 f"1. Synthesis: Analyze both readings to extract the most logical words based on the material's tone and formatting (e.g., comic book block lettering, sound effects).\n"
@@ -933,7 +956,7 @@ def dispatch(request: BatchRequest):
                         # Parse <thinking> and <transcription> tags using robust parser
                         thinking, transcription = parse_arbiter_output(text_final)
                         
-                        if MODELS_CONFIG.get(arbiter_model_id, {}).get("handler_class") == "DeepSeekAPI" and enable_thinking:
+                        if MODELS_CONFIG.get(arbiter_model_id, {}).get("handler_class") == "DeepSeekAPI" and enable_thinking_item:
                             if reasoning:
                                 thinking = reasoning
 
