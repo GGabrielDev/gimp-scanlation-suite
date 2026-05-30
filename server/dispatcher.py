@@ -687,6 +687,7 @@ def dispatch(request: BatchRequest):
 
         def event_generator():
             global _n_gpu_layers_used
+            nonlocal expert_b_model_id
             N = len(crops_base64)
             if N == 0:
                 yield json.dumps({"type": "progress", "percentage": 1.0, "message": "No crops to process."}) + "\n"
