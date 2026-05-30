@@ -900,3 +900,8 @@ def dispatch(request: BatchRequest):
             yield json.dumps({"type": "result", "results": final_results}) + "\n"
 
         return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+if __name__ == "__main__":
+    import uvicorn
+    sys.stderr.write("[Server Dispatcher] Starting uvicorn server...\n")
+    uvicorn.run(app, host="0.0.0.0", port=7890)
