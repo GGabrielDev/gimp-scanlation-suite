@@ -549,18 +549,29 @@ def dispatch(request: BatchRequest):
                                 "Authorization": f"Bearer {api_key}",
                                 "Content-Type": "application/json"
                             }
+                            enable_thinking = options.get("enable_thinking", False)
                             payload = {
                                 "model": MODELS_CONFIG.get(model, {}).get("model_name", "deepseek-chat"),
                                 "messages": [
                                     {"role": "system", "content": system_prompt},
                                     {"role": "user", "content": user_prompt}
-                                ],
-                                "temperature": 0.2
+                                ]
                             }
+                            if enable_thinking:
+                                payload["thinking"] = {"type": "enabled"}
+                            else:
+                                payload["thinking"] = {"type": "disabled"}
+                                payload["temperature"] = 0.2
                             
                             response = requests.post(url, json=payload, headers=headers, timeout=30.0)
                             response.raise_for_status()
                             res_json = response.json()
+                            
+                            # Log reasoning/thinking steps if returned by DeepSeek R1/V4
+                            reasoning = res_json["choices"][0]["message"].get("reasoning_content", "")
+                            if reasoning:
+                                sys.stderr.write(f"\n[Server Dispatcher] DeepSeek Reasoning:\n---\n{reasoning}\n---\n")
+
                             corrected_text = res_json["choices"][0]["message"]["content"].strip()
                             corrected_text = corrected_text.strip().strip('"\'')
                             sys.stderr.write(f"[Server Dispatcher] DeepSeek Pipeline - Corrected text: '{corrected_text}'\n")
@@ -824,7 +835,7 @@ def dispatch(request: BatchRequest):
                                 f"<thinking>\n[Your reasoning]</thinking>\n<transcription>\n[Final text only]</transcription>"
                             )
 
-                        if arbiter_model_id == "DeepSeek":
+                        if MODELS_CONFIG.get(arbiter_model_id, {}).get("handler_class") == "DeepSeekAPI":
                             import requests
                             api_key = os.environ.get("DEEPSEEK_API_KEY", "")
                             if not api_key:
@@ -839,18 +850,29 @@ def dispatch(request: BatchRequest):
                                 "Content-Type": "application/json"
                             }
                             
+                            enable_thinking = options.get("enable_thinking", False)
                             payload = {
                                 "model": MODELS_CONFIG.get(arbiter_model_id, {}).get("model_name", "deepseek-chat"),
                                 "messages": [
                                     {"role": "system", "content": system_instruction},
                                     {"role": "user", "content": user_prompt}
-                                ],
-                                "temperature": 0.2
+                                ]
                             }
+                            if enable_thinking:
+                                payload["thinking"] = {"type": "enabled"}
+                            else:
+                                payload["thinking"] = {"type": "disabled"}
+                                payload["temperature"] = 0.2
                             
                             response = requests.post(url, json=payload, headers=headers, timeout=30.0)
                             response.raise_for_status()
                             res_json = response.json()
+                            
+                            # Log reasoning/thinking steps if returned by DeepSeek R1/V4
+                            reasoning = res_json["choices"][0]["message"].get("reasoning_content", "")
+                            if reasoning:
+                                sys.stderr.write(f"\n[Server Dispatcher] DeepSeek Arbiter Reasoning:\n---\n{reasoning}\n---\n")
+
                             text_final = res_json["choices"][0]["message"]["content"]
                         else:
                             arbiter.reset()

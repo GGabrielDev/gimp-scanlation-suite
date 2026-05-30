@@ -224,16 +224,23 @@ class GimpScanlationSuite(Gimp.PlugIn):
             )
             procedure.add_string_argument(
                 "consensus-expert-b",
-                "_Consensus Expert B (Extractor)",
-                "Vision-capable OCR model to act as Expert B in consensus pipeline",
+                "_Extractor B",
+                "Vision-capable OCR model to act as Extractor B in consensus pipeline",
                 "PaddleOCR_Manga",
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_string_argument(
                 "consensus-arbiter",
-                "_Consensus Arbiter",
+                "_Arbiter",
                 "Model to act as Arbiter in consensus pipeline",
                 "DeepSeek",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_boolean_argument(
+                "enable-thinking",
+                "_Enable Thinking/Reasoning",
+                "Enable reasoning/thinking mode for API models that support it",
+                False,
                 GObject.ParamFlags.READWRITE
             )
             return procedure
@@ -559,23 +566,33 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 combo_material.append_text(mat)
             grid.attach(combo_material, 1, 3, 1, 1)
 
-            # Consensus Expert B Select
+            # Extractor B Select
             expert_b_label = Gtk.Label()
-            expert_b_label.set_markup("<b>Consensus Expert B (Extractor):</b>")
+            expert_b_label.set_markup("<b>Extractor B:</b>")
             expert_b_label.set_xalign(0.0)
             grid.attach(expert_b_label, 0, 4, 1, 1)
 
             combo_expert_b = Gtk.ComboBoxText()
             grid.attach(combo_expert_b, 1, 4, 1, 1)
 
-            # Consensus Arbiter Select
+            # Arbiter Select
             arbiter_label = Gtk.Label()
-            arbiter_label.set_markup("<b>Consensus Arbiter:</b>")
+            arbiter_label.set_markup("<b>Arbiter:</b>")
             arbiter_label.set_xalign(0.0)
             grid.attach(arbiter_label, 0, 5, 1, 1)
 
             combo_arbiter = Gtk.ComboBoxText()
             grid.attach(combo_arbiter, 1, 5, 1, 1)
+
+            # Enable Thinking/Reasoning Checkbox
+            chk_thinking = Gtk.CheckButton(label="Enable Thinking/Reasoning")
+            grid.attach(chk_thinking, 0, 6, 2, 1)
+
+            # Note label
+            note_label = Gtk.Label()
+            note_label.set_markup("<span size='small' foreground='#888888'>* Note: manga_ocr is used as Extractor A (first pass) by default.</span>")
+            note_label.set_xalign(0.0)
+            grid.attach(note_label, 0, 7, 2, 1)
             
             vbox.pack_start(grid, False, False, 0)
             
@@ -597,6 +614,18 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 combo_material.set_active(materials.index(mat_val))
             else:
                 combo_material.set_active(0)
+
+            # Set thinking checkbox state
+            thinking_val = config.get_property("enable-thinking")
+            chk_thinking.set_active(thinking_val)
+            
+            # Thinking sensitivity logic
+            def update_thinking_sensitivity():
+                engine = config.get_property("ocr-engine") or ""
+                arbiter = config.get_property("consensus-arbiter") or ""
+                # Enable toggle only for DeepSeek models
+                is_ds = any("deepseek" in m.lower() for m in [engine, arbiter])
+                chk_thinking.set_sensitive(is_ds)
                 
             # Populating dropdown safely in the idle loop
             def populate_dropdown(models):
@@ -631,12 +660,16 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 if stored_arbiter in models:
                     combo_arbiter.set_active(models.index(stored_arbiter))
                 else:
-                    if "DeepSeek" in models:
+                    if "DeepSeek-V4-Flash" in models:
+                        combo_arbiter.set_active(models.index("DeepSeek-V4-Flash"))
+                    elif "DeepSeek" in models:
                         combo_arbiter.set_active(models.index("DeepSeek"))
                     elif "JP_Arbiter_8B" in models:
                         combo_arbiter.set_active(models.index("JP_Arbiter_8B"))
                     else:
                         combo_arbiter.set_active(0)
+                
+                update_thinking_sensitivity()
                 return False
 
             import threading
@@ -668,6 +701,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 val = widget.get_active_text()
                 if val:
                     config.set_property("ocr-engine", val)
+                update_thinking_sensitivity()
                     
             combo_model.connect("changed", on_model_changed)
 
@@ -682,8 +716,14 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 val = widget.get_active_text()
                 if val:
                     config.set_property("consensus-arbiter", val)
+                update_thinking_sensitivity()
 
             combo_arbiter.connect("changed", on_arbiter_changed)
+
+            def on_thinking_toggled(widget):
+                config.set_property("enable-thinking", widget.get_active())
+
+            chk_thinking.connect("toggled", on_thinking_toggled)
 
             def on_src_lang_changed(widget):
                 val = widget.get_active_text()
@@ -719,6 +759,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
         ensemble_consensus = config.get_property("ensemble-consensus")
         consensus_expert_b = config.get_property("consensus-expert-b") or "PaddleOCR_Manga"
         consensus_arbiter = config.get_property("consensus-arbiter") or "DeepSeek"
+        enable_thinking = config.get_property("enable-thinking")
 
         if inference_mode == "Local" and (ocr_engine_param == "Ensemble" or ensemble_consensus):
             Gimp.message("Error: Ensemble OCR mode is only supported in Remote mode. Please start the dispatcher server and select Remote mode.")
@@ -941,7 +982,8 @@ class GimpScanlationSuite(Gimp.PlugIn):
                         "material_type": material_type,
                         "half_to_full": half_to_full,
                         "consensus_expert_b": consensus_expert_b,
-                        "consensus_arbiter": consensus_arbiter
+                        "consensus_arbiter": consensus_arbiter,
+                        "enable_thinking": enable_thinking
                     }
                     task_type = "ensemble_ocr" if (ocr_engine_param == "Ensemble" or ensemble_consensus) else "ocr"
                     res = remote_client.dispatch_batch(
