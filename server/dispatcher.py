@@ -117,7 +117,30 @@ MODELS_CONFIG = {
         "local_name": None,
         "local_projector_name": None,
         "handler_class": "DeepSeekAPI",
-        "n_ctx": 4096
+        "n_ctx": 4096,
+        "model_name": "deepseek-chat"
+    },
+    "DeepSeek-V4-Flash": {
+        "repo": None,
+        "file": None,
+        "projector_repo": None,
+        "projector_file": None,
+        "local_name": None,
+        "local_projector_name": None,
+        "handler_class": "DeepSeekAPI",
+        "n_ctx": 4096,
+        "model_name": "deepseek-v4-flash"
+    },
+    "DeepSeek-V4-Pro": {
+        "repo": None,
+        "file": None,
+        "projector_repo": None,
+        "projector_file": None,
+        "local_name": None,
+        "local_projector_name": None,
+        "handler_class": "DeepSeekAPI",
+        "n_ctx": 4096,
+        "model_name": "deepseek-v4-pro"
     }
 }
 
@@ -169,8 +192,8 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         _current_loaded_model_id = "manga_ocr"
         return mocr
 
-    if model_id == "DeepSeek":
-        # Force unload other models
+    # Bypass loading for API models
+    if model_id in MODELS_CONFIG and MODELS_CONFIG[model_id].get("handler_class") == "DeepSeekAPI":
         for other in list(_loaded_models.keys()):
             unload_model(other)
         return None
@@ -400,7 +423,7 @@ def dispatch(request: BatchRequest):
             source_lang = options.get("source_language") or "Japanese"
             material_type = options.get("material_type") or "manga"
 
-            if model == "DeepSeek":
+            if MODELS_CONFIG.get(model, {}).get("handler_class") == "DeepSeekAPI":
                 raw_ocr_model_id = "manga_ocr" if source_lang.lower() == "japanese" else "PaddleOCR_Manga"
                 yield json.dumps({
                     "type": "progress",
@@ -451,7 +474,7 @@ def dispatch(request: BatchRequest):
                     if not img_str.startswith("data:"):
                         img_str = f"data:image/png;base64,{img_str}"
 
-                    if model == "DeepSeek":
+                    if MODELS_CONFIG.get(model, {}).get("handler_class") == "DeepSeekAPI":
                         try:
                             # 1. Run Raw OCR on crop
                             header, data = img_str.split(",", 1)
@@ -527,7 +550,7 @@ def dispatch(request: BatchRequest):
                                 "Content-Type": "application/json"
                             }
                             payload = {
-                                "model": "deepseek-chat",
+                                "model": MODELS_CONFIG.get(model, {}).get("model_name", "deepseek-chat"),
                                 "messages": [
                                     {"role": "system", "content": system_prompt},
                                     {"role": "user", "content": user_prompt}
@@ -603,7 +626,7 @@ def dispatch(request: BatchRequest):
                 }) + "\n"
                 yield json.dumps({"type": "result", "results": results}) + "\n"
             finally:
-                if model == "DeepSeek":
+                if MODELS_CONFIG.get(model, {}).get("handler_class") == "DeepSeekAPI":
                     unload_model(raw_ocr_model_id)
                 else:
                     unload_model(model)
@@ -817,7 +840,7 @@ def dispatch(request: BatchRequest):
                             }
                             
                             payload = {
-                                "model": "deepseek-chat",
+                                "model": MODELS_CONFIG.get(arbiter_model_id, {}).get("model_name", "deepseek-chat"),
                                 "messages": [
                                     {"role": "system", "content": system_instruction},
                                     {"role": "user", "content": user_prompt}
