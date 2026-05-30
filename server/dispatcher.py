@@ -624,12 +624,15 @@ def dispatch(request: BatchRequest):
         system_instruction = PROMPT_DICTIONARY.get(material_type, PROMPT_DICTIONARY["manga"])
 
         # Determine Arbiter VLM Model ID
-        arbiter_model_id = model
+        arbiter_model_id = options.get("consensus_arbiter") or model
         if arbiter_model_id == "Ensemble":
-            arbiter_model_id = "JP_Arbiter_8B" # default strong arbiter VLM
+            arbiter_model_id = "DeepSeek" # default strong arbiter VLM
 
         if arbiter_model_id not in MODELS_CONFIG:
             raise HTTPException(status_code=400, detail=f"Arbiter VLM Model ID '{arbiter_model_id}' is not registered.")
+
+        # Determine Expert B Model ID
+        expert_b_model_id = options.get("consensus_expert_b") or "PaddleOCR_Manga"
 
         # Clean/convert batch payloads
         crops_base64 = []
@@ -689,9 +692,10 @@ def dispatch(request: BatchRequest):
 
             # --- PASS 2: Expert B ---
             results_b = []
-            # Expert B must be a vision model; if the arbiter is text-only or API-based, we fall back to PaddleOCR_Manga
-            is_vision_model = MODELS_CONFIG.get(arbiter_model_id, {}).get("handler_class") not in ["TextOnly", "DeepSeekAPI"]
-            expert_b_model_id = arbiter_model_id if is_vision_model else "PaddleOCR_Manga"
+            # Expert B must be a vision model; if the chosen Expert B is text-only or API-based, we fall back to PaddleOCR_Manga
+            is_vision_model = MODELS_CONFIG.get(expert_b_model_id, {}).get("handler_class") not in ["TextOnly", "DeepSeekAPI"]
+            if not is_vision_model:
+                expert_b_model_id = "PaddleOCR_Manga"
             try:
                 yield json.dumps({
                     "type": "progress",

@@ -222,6 +222,20 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "manga",
                 GObject.ParamFlags.READWRITE
             )
+            procedure.add_string_argument(
+                "consensus-expert-b",
+                "_Consensus Expert B (Extractor)",
+                "Vision-capable OCR model to act as Expert B in consensus pipeline",
+                "PaddleOCR_Manga",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "consensus-arbiter",
+                "_Consensus Arbiter",
+                "Model to act as Arbiter in consensus pipeline",
+                "DeepSeek",
+                GObject.ParamFlags.READWRITE
+            )
             return procedure
 
         elif name == "gimp-scanlation-inpaint":
@@ -544,6 +558,24 @@ class GimpScanlationSuite(Gimp.PlugIn):
             for mat in materials:
                 combo_material.append_text(mat)
             grid.attach(combo_material, 1, 3, 1, 1)
+
+            # Consensus Expert B Select
+            expert_b_label = Gtk.Label()
+            expert_b_label.set_markup("<b>Consensus Expert B (Extractor):</b>")
+            expert_b_label.set_xalign(0.0)
+            grid.attach(expert_b_label, 0, 4, 1, 1)
+
+            combo_expert_b = Gtk.ComboBoxText()
+            grid.attach(combo_expert_b, 1, 4, 1, 1)
+
+            # Consensus Arbiter Select
+            arbiter_label = Gtk.Label()
+            arbiter_label.set_markup("<b>Consensus Arbiter:</b>")
+            arbiter_label.set_xalign(0.0)
+            grid.attach(arbiter_label, 0, 5, 1, 1)
+
+            combo_arbiter = Gtk.ComboBoxText()
+            grid.attach(combo_arbiter, 1, 5, 1, 1)
             
             vbox.pack_start(grid, False, False, 0)
             
@@ -577,6 +609,34 @@ class GimpScanlationSuite(Gimp.PlugIn):
                     combo_model.set_active(models.index(stored_model))
                 else:
                     combo_model.set_active(0)
+
+                combo_expert_b.remove_all()
+                for m in models:
+                    combo_expert_b.append_text(m)
+                stored_expert_b = config.get_property("consensus-expert-b")
+                if stored_expert_b in models:
+                    combo_expert_b.set_active(models.index(stored_expert_b))
+                else:
+                    if "PaddleOCR_Manga" in models:
+                        combo_expert_b.set_active(models.index("PaddleOCR_Manga"))
+                    elif "PaddleOCR" in models:
+                        combo_expert_b.set_active(models.index("PaddleOCR"))
+                    else:
+                        combo_expert_b.set_active(0)
+
+                combo_arbiter.remove_all()
+                for m in models:
+                    combo_arbiter.append_text(m)
+                stored_arbiter = config.get_property("consensus-arbiter")
+                if stored_arbiter in models:
+                    combo_arbiter.set_active(models.index(stored_arbiter))
+                else:
+                    if "DeepSeek" in models:
+                        combo_arbiter.set_active(models.index("DeepSeek"))
+                    elif "JP_Arbiter_8B" in models:
+                        combo_arbiter.set_active(models.index("JP_Arbiter_8B"))
+                    else:
+                        combo_arbiter.set_active(0)
                 return False
 
             import threading
@@ -611,6 +671,20 @@ class GimpScanlationSuite(Gimp.PlugIn):
                     
             combo_model.connect("changed", on_model_changed)
 
+            def on_expert_b_changed(widget):
+                val = widget.get_active_text()
+                if val:
+                    config.set_property("consensus-expert-b", val)
+
+            combo_expert_b.connect("changed", on_expert_b_changed)
+
+            def on_arbiter_changed(widget):
+                val = widget.get_active_text()
+                if val:
+                    config.set_property("consensus-arbiter", val)
+
+            combo_arbiter.connect("changed", on_arbiter_changed)
+
             def on_src_lang_changed(widget):
                 val = widget.get_active_text()
                 if val:
@@ -643,6 +717,8 @@ class GimpScanlationSuite(Gimp.PlugIn):
         source_lang = config.get_property("source-language") or "Japanese"
         material_type = config.get_property("material-type") or "manga"
         ensemble_consensus = config.get_property("ensemble-consensus")
+        consensus_expert_b = config.get_property("consensus-expert-b") or "PaddleOCR_Manga"
+        consensus_arbiter = config.get_property("consensus-arbiter") or "DeepSeek"
 
         if inference_mode == "Local" and (ocr_engine_param == "Ensemble" or ensemble_consensus):
             Gimp.message("Error: Ensemble OCR mode is only supported in Remote mode. Please start the dispatcher server and select Remote mode.")
@@ -863,7 +939,9 @@ class GimpScanlationSuite(Gimp.PlugIn):
                         "target_language": target_lang,
                         "source_language": source_lang,
                         "material_type": material_type,
-                        "half_to_full": half_to_full
+                        "half_to_full": half_to_full,
+                        "consensus_expert_b": consensus_expert_b,
+                        "consensus_arbiter": consensus_arbiter
                     }
                     task_type = "ensemble_ocr" if (ocr_engine_param == "Ensemble" or ensemble_consensus) else "ocr"
                     res = remote_client.dispatch_batch(
