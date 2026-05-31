@@ -4,3 +4,4 @@ venv/
 .env
 models/
 .antigravitycli/
+scratch_out/
