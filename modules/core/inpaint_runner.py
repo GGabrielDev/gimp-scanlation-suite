@@ -5,7 +5,7 @@ import threading
 import time
 import io
 import base64
-from PIL import Image
+from PIL import Image, ImageDraw
 import gi
 
 gi.require_version('Gimp', '3.0')
@@ -127,6 +127,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
 
     # 3. Retrieve strokes and parse coordinates
     bounding_boxes = []
+    stroke_anchors = []
     try:
         strokes = target_path.get_strokes()
         for stroke_id in strokes:
@@ -165,6 +166,17 @@ def run_inpaint_processing(procedure, image, drawables, config):
             ymin, ymax = min(y_coords), max(y_coords)
             
             bounding_boxes.append((xmin, ymin, xmax, ymax))
+
+            # Extract anchor points (in GIMP, Bezier nodes have 3 point pairs each: control1, anchor, control2)
+            anchors = []
+            if len(coords) >= 6:
+                for i in range(0, len(coords), 6):
+                    if i + 3 < len(coords):
+                        anchors.append((coords[i+2], coords[i+3]))
+            else:
+                anchors = [(coords[i], coords[i+1]) for i in range(0, len(coords), 2) if i + 1 < len(coords)]
+            
+            stroke_anchors.append(anchors)
     except Exception as e:
         sys.stderr.write(f"[Koharu Inpaint] Failed to parse paths/strokes: {e}\n")
         Gimp.message("Failed to extract coordinates from paths.")
@@ -222,15 +234,26 @@ def run_inpaint_processing(procedure, image, drawables, config):
 
     # Construct full-canvas mask
     mask_np = np.zeros((full_h, full_w), dtype=np.uint8)
-    for box in bounding_boxes:
+    mask_pil = Image.fromarray(mask_np)
+    draw = ImageDraw.Draw(mask_pil)
+
+    for idx, box in enumerate(bounding_boxes):
         xmin, ymin, xmax, ymax = box
-        x0 = int(np.clip(xmin - offset_x, 0, full_w))
-        x1 = int(np.clip(xmax - offset_x, 0, full_w))
-        y0 = int(np.clip(ymin - offset_y, 0, full_h))
-        y1 = int(np.clip(ymax - offset_y, 0, full_h))
+        anchors = stroke_anchors[idx] if idx < len(stroke_anchors) else []
         
-        if x1 > x0 and y1 > y0:
-            mask_np[y0:y1, x0:x1] = 255
+        if len(anchors) >= 3:
+            # Shift anchor coordinates by offset_x, offset_y
+            shifted_anchors = [(int(ax - offset_x), int(ay - offset_y)) for ax, ay in anchors]
+            draw.polygon(shifted_anchors, fill=255)
+        else:
+            x0 = int(np.clip(xmin - offset_x, 0, full_w))
+            x1 = int(np.clip(xmax - offset_x, 0, full_w))
+            y0 = int(np.clip(ymin - offset_y, 0, full_h))
+            y1 = int(np.clip(ymax - offset_y, 0, full_h))
+            if x1 > x0 and y1 > y0:
+                draw.rectangle([x0, y0, x1, y1], fill=255)
+                
+    mask_np = np.array(mask_pil)
 
     # Dilation
     if dilation > 0:
