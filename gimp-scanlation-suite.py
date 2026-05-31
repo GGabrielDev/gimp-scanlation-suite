@@ -33,6 +33,8 @@ gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk
 from gi.repository import GObject
 from gi.repository import GLib
+gi.require_version('Babl', '0.1')
+from gi.repository import Babl
 
 try:
     from modules import scouter
@@ -2695,6 +2697,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
         # ── 4. Map translated layers to bounding boxes ──
+        # Also include unmatched text layers (no bounding box) so user can still typeset them
         mapped_bubbles = []
         used_children = set()
         for box in bounding_boxes:
@@ -2708,7 +2711,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 if id(child) in used_children:
                     continue
                 dist = np.sqrt((tx - cx)**2 + (ty - cy)**2)
-                if dist < best_dist and dist < 500.0:
+                if dist < best_dist:
                     best_dist = dist
                     matched_child = child
                     matched_text = text
@@ -2729,9 +2732,27 @@ class GimpScanlationSuite(Gimp.PlugIn):
                     "preset": "Dialogue",
                 })
 
-        if not mapped_bubbles:
-            Gimp.message("Could not match any translated text layers to bounding boxes.")
-            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+        # Include any remaining text layers that didn't match a bounding box
+        for child, tx, ty, text in translated_texts:
+            if id(child) not in used_children:
+                # Use layer bounds as a synthetic bounding box
+                lw = child.get_width()
+                lh = child.get_height()
+                mapped_bubbles.append({
+                    "box": (tx, ty, tx + lw, ty + lh),
+                    "layer": child,
+                    "text": text,
+                    "font_family": config.get_property("font-family") or "CCYadaYadaYada",
+                    "font_size": config.get_property("base-font-size") or 18,
+                    "alignment": config.get_property("alignment") or "Center",
+                    "auto_fit": True,
+                    "letter_spacing": 0.0,
+                    "line_spacing": 0.0,
+                    "color_hex": "#000000",
+                    "direction": "Horizontal",
+                    "preset": "Dialogue",
+                })
+                sys.stderr.write(f"[Koharu Typesetter] Text layer '{text[:30]}...' had no matching bounding box, using layer bounds\n")
 
         # ── 5. Gather available font names from GIMP ──
         all_font_names = []
@@ -2997,7 +3018,9 @@ class GimpScanlationSuite(Gimp.PlugIn):
         font_scroll.add(font_listbox)
         props_box.pack_start(font_scroll, False, False, 0)
 
-        def populate_font_list(filter_text=""):
+        in_font_update = [False]
+
+        def populate_font_list(filter_text="", selected_font=None):
             for child in font_listbox.get_children():
                 font_listbox.remove(child)
             ft = filter_text.lower()
@@ -3014,25 +3037,29 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 row.add(lbl)
                 row._font_name = fname
                 font_listbox.add(row)
+                if selected_font and fname == selected_font:
+                    font_listbox.select_row(row)
                 count += 1
                 if count >= 100:
                     break
             font_listbox.show_all()
 
-        populate_font_list()
+        populate_font_list(mapped_bubbles[0]["font_family"], mapped_bubbles[0]["font_family"])
 
         def on_font_search_changed(entry):
+            if in_font_update[0]:
+                return
             populate_font_list(entry.get_text())
         entry_font_search.connect("changed", on_font_search_changed)
 
         def on_font_selected(lb, row):
             if row and hasattr(row, "_font_name"):
-                entry_font_search.handler_block_by_func(on_font_search_changed)
+                in_font_update[0] = True
                 entry_font_search.set_text(row._font_name)
-                entry_font_search.handler_unblock_by_func(on_font_search_changed)
+                in_font_update[0] = False
                 idx = current_selection[0]
                 mapped_bubbles[idx]["font_family"] = row._font_name
-        font_listbox.connect("row-activated", on_font_selected)
+        font_listbox.connect("row-selected", on_font_selected)
 
         props_box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 4)
 
@@ -3091,23 +3118,66 @@ class GimpScanlationSuite(Gimp.PlugIn):
             "then click this button to grab the foreground color.")
         def on_eyedropper_clicked(btn):
             try:
-                fg_color = Gimp.context_get_foreground()
+                fg_color = None
+                # Try direct API first
+                if hasattr(Gimp, 'context_get_foreground'):
+                    fg_color = Gimp.context_get_foreground()
+                # Fallback: PDB call
+                if not fg_color:
+                    pdb = Gimp.get_pdb()
+                    if pdb:
+                        result = pdb.run_procedure("gimp-context-get-foreground", [])
+                        if result and result.length() > 1:
+                            val = result.index(1)
+                            if hasattr(val, "get_value"):
+                                fg_color = val.get_value()
+                            else:
+                                fg_color = val
+
                 if fg_color:
-                    # Gegl.Color -> RGBA floats
                     r = g = b = 0.0
+                    # Try multiple Gegl.Color extraction methods
+                    extracted = False
                     if hasattr(fg_color, 'get_rgba'):
-                        r, g, b, _a = fg_color.get_rgba()
-                    elif hasattr(fg_color, 'get_components'):
-                        comps = fg_color.get_components()
-                        if len(comps) >= 3:
-                            r, g, b = comps[0], comps[1], comps[2]
+                        try:
+                            ret = fg_color.get_rgba()
+                            if hasattr(ret, 'red'):
+                                r, g, b = ret.red, ret.green, ret.blue
+                                extracted = True
+                            elif isinstance(ret, (tuple, list)) and len(ret) >= 3:
+                                r, g, b = ret[0], ret[1], ret[2]
+                                extracted = True
+                        except Exception as e_rgba:
+                            sys.stderr.write(f"[Koharu Typesetter] get_rgba failed: {e_rgba}\n")
+                    if not extracted and hasattr(fg_color, 'get_components'):
+                        try:
+                            comps = fg_color.get_components()
+                            if len(comps) >= 3:
+                                r, g, b = comps[0], comps[1], comps[2]
+                                extracted = True
+                        except Exception as e_comps:
+                            sys.stderr.write(f"[Koharu Typesetter] get_components failed: {e_comps}\n")
+                    if not extracted and hasattr(fg_color, 'get_bytes'):
+                        try:
+                            fmt = Babl.format("R'G'B' u8")
+                            data = fg_color.get_bytes(fmt)
+                            if data and len(data) >= 3:
+                                r, g, b = data[0]/255.0, data[1]/255.0, data[2]/255.0
+                                extracted = True
+                        except Exception as e_bytes:
+                            sys.stderr.write(f"[Koharu Typesetter] get_bytes failed: {e_bytes}\n")
+
                     from gi.repository import Gdk
                     rgba = Gdk.RGBA()
-                    rgba.red = r
-                    rgba.green = g
-                    rgba.blue = b
+                    # Clamp values - they should be 0.0-1.0 floats
+                    rgba.red = max(0.0, min(1.0, float(r)))
+                    rgba.green = max(0.0, min(1.0, float(g)))
+                    rgba.blue = max(0.0, min(1.0, float(b)))
                     rgba.alpha = 1.0
                     color_btn.set_rgba(rgba)
+                    sys.stderr.write(f"[Koharu Typesetter] Picked FG color: R={rgba.red:.2f} G={rgba.green:.2f} B={rgba.blue:.2f}\n")
+                else:
+                    sys.stderr.write("[Koharu Typesetter] Could not get foreground color\n")
             except Exception as pick_err:
                 sys.stderr.write(f"[Koharu Typesetter] Eyedropper pick failed: {pick_err}\n")
         btn_eyedropper.connect("clicked", on_eyedropper_clicked)
@@ -3144,11 +3214,14 @@ class GimpScanlationSuite(Gimp.PlugIn):
         btn_bar.set_margin_start(12)
         btn_bar.set_margin_end(12)
 
-        btn_preview = Gtk.Button(label="⟳ Preview Selected")
+        btn_preview = Gtk.Button(label="⟳ Preview")
         btn_preview.get_style_context().add_class("suggested-action")
         btn_bar.pack_start(btn_preview, True, True, 0)
 
-        btn_apply_all = Gtk.Button(label="✓ Apply All & Close")
+        btn_apply_selected = Gtk.Button(label="✓ Apply Selected")
+        btn_bar.pack_start(btn_apply_selected, True, True, 0)
+
+        btn_apply_all = Gtk.Button(label="✓✓ Apply All & Close")
         btn_apply_all.get_style_context().add_class("suggested-action")
         btn_bar.pack_start(btn_apply_all, True, True, 0)
 
@@ -3188,10 +3261,10 @@ class GimpScanlationSuite(Gimp.PlugIn):
         def load_state_to_widgets(idx):
             """Load a bubble's state dict into the property widgets."""
             b = mapped_bubbles[idx]
-            entry_font_search.handler_block_by_func(on_font_search_changed)
+            in_font_update[0] = True
             entry_font_search.set_text(b["font_family"])
-            entry_font_search.handler_unblock_by_func(on_font_search_changed)
-            populate_font_list(b["font_family"])
+            in_font_update[0] = False
+            populate_font_list(b["font_family"], b["font_family"])
 
             spin_font_size.set_value(b["font_size"])
             align_map = {"Center": 0, "Left": 1, "Right": 2}
@@ -3291,6 +3364,35 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 b["layer"] = new_layer
             Gimp.displays_flush()
         btn_preview.connect("clicked", on_preview_clicked)
+
+        def on_apply_selected_clicked(btn):
+            save_current_to_state()
+            idx = current_selection[0]
+            b = mapped_bubbles[idx]
+            font = self._resolve_font(b["font_family"])
+            if not font:
+                Gimp.message(f"Font '{b['font_family']}' not found.")
+                return
+
+            justification = {"Center": Gimp.TextJustification.CENTER,
+                             "Left": Gimp.TextJustification.LEFT,
+                             "Right": Gimp.TextJustification.RIGHT}.get(b["alignment"], Gimp.TextJustification.CENTER)
+
+            new_layer = self._apply_typeset_to_bubble(
+                image, translated_group, b, font, b["font_size"],
+                justification, b["auto_fit"], b["letter_spacing"],
+                b["line_spacing"], b["color_hex"], b["direction"])
+            if new_layer:
+                b["layer"] = new_layer
+            Gimp.displays_flush()
+
+            # Auto-advance to the next bubble
+            next_idx = idx + 1
+            if next_idx < len(mapped_bubbles):
+                next_row = listbox.get_row_at_index(next_idx)
+                if next_row:
+                    listbox.select_row(next_row)
+        btn_apply_selected.connect("clicked", on_apply_selected_clicked)
 
         def on_apply_all_clicked(btn):
             save_current_to_state()
