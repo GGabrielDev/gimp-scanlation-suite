@@ -2599,11 +2599,14 @@ class GimpScanlationSuite(Gimp.PlugIn):
 
     def run_typeset(self, procedure, run_mode, image, drawables, config, run_data):
         """
-        Formats and typesets translated dialogue layers dynamically inside speech bubbles.
+        Formats and typesets translated dialogue layers with per-bubble editing,
+        searchable font picker, manga presets, and live canvas preview.
         """
+        import textwrap
+
         GimpUi.init("gimp-scanlation-typeset")
 
-        # 1. Locate the 'Translated Text' layer group at root
+        # ── 1. Locate the 'Translated Text' layer group at root ──
         translated_group = None
         for layer in image.get_layers():
             if layer.get_name() == "Translated Text":
@@ -2611,7 +2614,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 break
 
         if not translated_group:
-            Gimp.message("Error: 'Translated Text' layer group not found. Please run translation first.")
+            Gimp.message("Error: 'Translated Text' layer group not found.\nPlease run translation first.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
         # Extract text layers from translated_group
@@ -2625,7 +2628,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                     if text_val.strip():
                         translated_texts.append((child, tx, ty, text_val))
         except Exception as read_err:
-            sys.stderr.write(f"[Koharu Typesetter] Failed to read Translated Text layers: {read_err}\n")
+            sys.stderr.write(f"[Koharu Typesetter] Failed to read layers: {read_err}\n")
             Gimp.message("Failed to read translated text layers.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -2633,41 +2636,35 @@ class GimpScanlationSuite(Gimp.PlugIn):
             Gimp.message("No text layers found in 'Translated Text' group to typeset.")
             return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
-        # 2. Locate the path layer (Detected Bubbles or fallback)
+        # ── 2. Locate the path layer (Detected Bubbles or fallback) ──
         target_path = None
         paths = image.get_paths()
         for p in paths:
             if p.get_name().startswith("Detected Bubbles"):
                 target_path = p
                 break
-                
         if not target_path:
             selected = image.get_selected_paths()
             if selected:
                 target_path = selected[0]
-                
         if not target_path and paths:
             target_path = paths[0]
-            
         if not target_path:
-            Gimp.message("Error: No paths/vectors found in the image. Please run detection first.")
+            Gimp.message("Error: No paths/vectors found. Please run detection first.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
-        sys.stderr.write(f"[Koharu Typesetter] Reading bounding boxes from path: '{target_path.get_name()}'...\n")
-
-        # 3. Retrieve strokes and parse coordinates to get bounding boxes
+        # ── 3. Parse bounding boxes from path strokes ──
         bounding_boxes = []
         try:
             strokes = target_path.get_strokes()
             for stroke_id in strokes:
                 res = target_path.stroke_get_points(stroke_id)
                 coords = None
-                if isinstance(res, tuple) or isinstance(res, list):
+                if isinstance(res, (tuple, list)):
                     for item in res:
-                        if isinstance(item, list) or isinstance(item, tuple):
-                            if len(item) > 0 and isinstance(item[0], (int, float)):
-                                coords = list(item)
-                                break
+                        if isinstance(item, (list, tuple)) and len(item) > 0 and isinstance(item[0], (int, float)):
+                            coords = list(item)
+                            break
                     if coords is None:
                         for item in res:
                             if hasattr(item, "controlpoints"):
@@ -2681,155 +2678,608 @@ class GimpScanlationSuite(Gimp.PlugIn):
                         coords = list(res.controlpoints)
                     elif hasattr(res, "points"):
                         coords = list(res.points)
-
                 if not coords:
                     continue
-
                 x_coords = coords[0::2]
                 y_coords = coords[1::2]
                 if not x_coords or not y_coords:
                     continue
-                    
-                xmin, xmax = min(x_coords), max(x_coords)
-                ymin, ymax = min(y_coords), max(y_coords)
-                
-                bounding_boxes.append((xmin, ymin, xmax, ymax))
+                bounding_boxes.append((min(x_coords), min(y_coords), max(x_coords), max(y_coords)))
         except Exception as e:
-            sys.stderr.write(f"[Koharu Typesetter] Failed to parse paths/strokes: {e}\n")
-            Gimp.message("Failed to extract coordinates from paths.")
+            sys.stderr.write(f"[Koharu Typesetter] Failed to parse paths: {e}\n")
+            Gimp.message("Failed to extract bounding boxes from paths.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
         if not bounding_boxes:
-            Gimp.message("No valid bounding boxes found in the selected path.")
+            Gimp.message("No valid bounding boxes found in the path.")
             return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
-        # 4. Map translated layers to bounding boxes based on proximity
+        # ── 4. Map translated layers to bounding boxes ──
         mapped_bubbles = []
+        used_children = set()
         for box in bounding_boxes:
             xmin, ymin, xmax, ymax = box
             cx = (xmin + xmax) / 2.0
             cy = (ymin + ymax) / 2.0
-            
             matched_child = None
             matched_text = ""
             best_dist = 999999.0
-            
             for child, tx, ty, text in translated_texts:
+                if id(child) in used_children:
+                    continue
                 dist = np.sqrt((tx - cx)**2 + (ty - cy)**2)
-                if dist < best_dist and dist < 300.0:
+                if dist < best_dist and dist < 500.0:
                     best_dist = dist
                     matched_child = child
                     matched_text = text
-                    
             if matched_child:
-                mapped_bubbles.append((box, matched_child, matched_text))
+                used_children.add(id(matched_child))
+                mapped_bubbles.append({
+                    "box": box,
+                    "layer": matched_child,
+                    "text": matched_text,
+                    "font_family": config.get_property("font-family") or "CC Yada Yada Yada",
+                    "font_size": config.get_property("base-font-size") or 18,
+                    "alignment": config.get_property("alignment") or "Center",
+                    "auto_fit": True,
+                    "letter_spacing": 0.0,
+                    "line_spacing": 0.0,
+                    "color_hex": "#000000",
+                    "direction": "Horizontal",
+                    "preset": "Dialogue",
+                })
 
-        # 5. Interactive Typesetting Settings Dialog
-        if run_mode == Gimp.RunMode.INTERACTIVE:
-            dialog = Gtk.Dialog(title="Koharu Typesetting & Formatting", parent=None, flags=0)
-            dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
-            dialog.set_default_size(450, 300)
-            
-            content_area = dialog.get_content_area()
-            
-            # Header Box
-            header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            header_box.set_margin_top(12)
-            header_box.set_margin_bottom(12)
-            header_box.set_margin_start(12)
-            header_box.set_margin_end(12)
-            
-            title_label = Gtk.Label()
-            title_label.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Koharu Typesetter</span>")
-            title_label.set_xalign(0.0)
-            header_box.pack_start(title_label, False, False, 0)
-            
-            desc_label = Gtk.Label()
-            desc_label.set_text("Configure font styling, scaling, and alignment options to format speech bubbles.")
-            desc_label.set_xalign(0.0)
-            header_box.pack_start(desc_label, False, False, 0)
-            content_area.pack_start(header_box, False, False, 0)
-            
-            # Settings Grid
-            grid = Gtk.Grid()
-            grid.set_column_spacing(12)
-            grid.set_row_spacing(12)
-            grid.set_margin_start(12)
-            grid.set_margin_end(12)
-            grid.set_margin_bottom(12)
-            
-            # Font Family
-            lbl_font = Gtk.Label(label="Font Family:")
-            lbl_font.set_xalign(0.0)
-            grid.attach(lbl_font, 0, 0, 1, 1)
-            entry_font = Gtk.Entry()
-            entry_font.set_text(config.get_property("font-family") or "CC Yada Yada Yada")
-            grid.attach(entry_font, 1, 0, 1, 1)
-            
-            # Base Font Size
-            lbl_size = Gtk.Label(label="Base Font Size (px):")
-            lbl_size.set_xalign(0.0)
-            grid.attach(lbl_size, 0, 1, 1, 1)
-            spin_size = Gtk.SpinButton.new_with_range(6.0, 72.0, 1.0)
-            spin_size.set_value(config.get_property("base-font-size") or 18.0)
-            grid.attach(spin_size, 1, 1, 1, 1)
-            
-            # Justification
-            lbl_align = Gtk.Label(label="Text Alignment:")
-            lbl_align.set_xalign(0.0)
-            grid.attach(lbl_align, 0, 2, 1, 1)
-            combo_align = Gtk.ComboBoxText()
-            combo_align.append_text("Center")
-            combo_align.append_text("Left")
-            combo_align.append_text("Right")
-            
-            stored_align = config.get_property("alignment") or "Center"
-            align_options = ["Center", "Left", "Right"]
-            if stored_align in align_options:
-                combo_align.set_active(align_options.index(stored_align))
-            else:
-                combo_align.set_active(0)
-            grid.attach(combo_align, 1, 2, 1, 1)
-            
-            # Auto-fit
-            chk_fit = Gtk.CheckButton(label="Auto-fit text size & wrap to bubbles")
-            chk_fit.set_active(config.get_property("auto-fit") if config.get_property("auto-fit") is not None else True)
-            grid.attach(chk_fit, 0, 3, 2, 1)
-            
-            content_area.pack_start(grid, True, True, 0)
-            
-            dialog.show_all()
-            response = dialog.run()
-            
-            if response == Gtk.ResponseType.OK:
-                font_family = entry_font.get_text().strip()
-                base_font_size = int(spin_size.get_value())
-                alignment = combo_align.get_active_text()
-                auto_fit = chk_fit.get_active()
-                
-                config.set_property("font-family", font_family)
-                config.set_property("base-font-size", base_font_size)
-                config.set_property("alignment", alignment)
-                config.set_property("auto-fit", auto_fit)
-                
-                dialog.destroy()
-            else:
-                dialog.destroy()
-                return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
-        else:
+        if not mapped_bubbles:
+            Gimp.message("Could not match any translated text layers to bounding boxes.")
+            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+        # ── 5. Gather available font names from GIMP ──
+        all_font_names = []
+        try:
+            pdb = Gimp.get_pdb()
+            if pdb:
+                result = pdb.run_procedure("gimp-fonts-get-list", [GObject.Value(GObject.TYPE_STRING, "")])
+                if result and result.length() > 1:
+                    str_array = result.index(1)
+                    if hasattr(str_array, "data"):
+                        all_font_names = list(str_array.data)
+                    elif isinstance(str_array, (list, tuple)):
+                        all_font_names = list(str_array)
+                    else:
+                        all_font_names = []
+        except Exception as font_list_err:
+            sys.stderr.write(f"[Koharu Typesetter] Could not enumerate fonts: {font_list_err}\n")
+        if not all_font_names:
+            all_font_names = ["Sans-serif", "Serif", "Monospace"]
+        all_font_names.sort(key=lambda s: s.lower())
+
+        # ── Non-interactive mode: apply defaults to all ──
+        if run_mode != Gimp.RunMode.INTERACTIVE:
             font_family = config.get_property("font-family") or "CC Yada Yada Yada"
             base_font_size = config.get_property("base-font-size") or 18
             alignment = config.get_property("alignment") or "Center"
             auto_fit = config.get_property("auto-fit") if config.get_property("auto-fit") is not None else True
 
-        # Resolve justification
-        gimp_justification = Gimp.TextJustification.CENTER
-        if alignment == "Left":
-            gimp_justification = Gimp.TextJustification.LEFT
-        elif alignment == "Right":
-            gimp_justification = Gimp.TextJustification.RIGHT
+            font = self._resolve_font(font_family)
+            if not font:
+                Gimp.message(f"Error: Font '{font_family}' could not be resolved.")
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
-        # Resolve font
+            justification = {"Center": Gimp.TextJustification.CENTER,
+                             "Left": Gimp.TextJustification.LEFT,
+                             "Right": Gimp.TextJustification.RIGHT}.get(alignment, Gimp.TextJustification.CENTER)
+
+            image.undo_group_start()
+            for bubble in mapped_bubbles:
+                self._apply_typeset_to_bubble(image, translated_group, bubble, font, base_font_size,
+                                              justification, auto_fit, 0.0, 0.0, "#000000", "Horizontal")
+            image.undo_group_end()
+            Gimp.displays_flush()
+            Gimp.message(f"Typesetting complete! Formatted {len(mapped_bubbles)} bubbles.")
+            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+        # ══════════════════════════════════════════════════════════════
+        # ── 6. INTERACTIVE: Build the two-panel typesetter window ──
+        # ══════════════════════════════════════════════════════════════
+
+        # Manga Presets definition
+        PRESETS = {
+            "Dialogue": {
+                "font_family": "CC Yada Yada Yada", "font_size": 18,
+                "alignment": "Center", "letter_spacing": 0.0, "line_spacing": 0.0,
+                "color_hex": "#000000", "direction": "Horizontal", "auto_fit": True,
+            },
+            "Shout / Title": {
+                "font_family": "CC Hush Hush", "font_size": 24,
+                "alignment": "Center", "letter_spacing": 0.0, "line_spacing": 0.0,
+                "color_hex": "#000000", "direction": "Horizontal", "auto_fit": True,
+            },
+            "Narration": {
+                "font_family": "Georgia", "font_size": 16,
+                "alignment": "Left", "letter_spacing": 0.0, "line_spacing": 2.0,
+                "color_hex": "#000000", "direction": "Horizontal", "auto_fit": True,
+            },
+            "Whisper / Thought": {
+                "font_family": "CC Yada Yada Yada", "font_size": 14,
+                "alignment": "Center", "letter_spacing": 0.0, "line_spacing": 0.0,
+                "color_hex": "#555555", "direction": "Horizontal", "auto_fit": True,
+            },
+            "SFX / Onomatopoeia": {
+                "font_family": "CC Hush Hush", "font_size": 28,
+                "alignment": "Center", "letter_spacing": 4.0, "line_spacing": -4.0,
+                "color_hex": "#000000", "direction": "Vertical Stack", "auto_fit": False,
+            },
+        }
+
+        # State tracking
+        current_selection = [0]  # index into mapped_bubbles
+        cancelled = [False]
+
+        # Start undo group for live preview
+        image.undo_group_start()
+
+        # ── Build Window ──
+        win = Gtk.Window(title="Koharu Typesetter")
+        win.set_default_size(820, 620)
+        win.set_keep_above(True)
+
+        main_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        win.add(main_hbox)
+
+        # ╔═════════════════════════════════════════╗
+        # ║  LEFT PANEL: Bubble List                ║
+        # ╚═════════════════════════════════════════╝
+        left_frame = Gtk.Frame(label="  Dialogue Bubbles  ")
+        left_frame.set_size_request(260, -1)
+        left_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        left_vbox.set_margin_top(8)
+        left_vbox.set_margin_bottom(8)
+        left_vbox.set_margin_start(8)
+        left_vbox.set_margin_end(8)
+
+        # Scrollable list
+        scroll_list = Gtk.ScrolledWindow()
+        scroll_list.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll_list.set_vexpand(True)
+
+        listbox = Gtk.ListBox()
+        listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+
+        for idx, bubble in enumerate(mapped_bubbles):
+            row = Gtk.ListBoxRow()
+            row_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            row_box.set_margin_top(6)
+            row_box.set_margin_bottom(6)
+            row_box.set_margin_start(8)
+            row_box.set_margin_end(8)
+
+            lbl_idx = Gtk.Label()
+            preview_text = bubble["text"][:40] + ("..." if len(bubble["text"]) > 40 else "")
+            lbl_idx.set_markup(f"<b>Bubble {idx + 1}</b>  <span foreground='#888888' size='small'>[{bubble['preset']}]</span>")
+            lbl_idx.set_xalign(0.0)
+            row_box.pack_start(lbl_idx, False, False, 0)
+
+            lbl_preview = Gtk.Label(label=preview_text)
+            lbl_preview.set_xalign(0.0)
+            lbl_preview.set_line_wrap(True)
+            lbl_preview.set_max_width_chars(30)
+            row_box.pack_start(lbl_preview, False, False, 0)
+
+            row.add(row_box)
+            row._bubble_index = idx
+            row._label_widget = lbl_idx
+            listbox.add(row)
+
+        scroll_list.add(listbox)
+        left_vbox.pack_start(scroll_list, True, True, 0)
+
+        # Apply All to Selected Preset button
+        btn_preset_all = Gtk.Button(label="Apply Preset to All Bubbles")
+        left_vbox.pack_start(btn_preset_all, False, False, 4)
+
+        left_frame.add(left_vbox)
+        main_hbox.pack_start(left_frame, False, False, 0)
+
+        # Vertical separator
+        main_hbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 0)
+
+        # ╔═════════════════════════════════════════╗
+        # ║  RIGHT PANEL: Property Editor           ║
+        # ╚═════════════════════════════════════════╝
+        right_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        right_vbox.set_hexpand(True)
+
+        # Header
+        header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        header.set_margin_top(10)
+        header.set_margin_start(12)
+        header.set_margin_end(12)
+        header.set_margin_bottom(6)
+        lbl_title = Gtk.Label()
+        lbl_title.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Koharu Typesetter</span>")
+        lbl_title.set_xalign(0.0)
+        header.pack_start(lbl_title, False, False, 0)
+        lbl_sub = Gtk.Label(label="Edit properties per-bubble or apply manga presets in bulk.")
+        lbl_sub.set_xalign(0.0)
+        header.pack_start(lbl_sub, False, False, 0)
+        right_vbox.pack_start(header, False, False, 0)
+        right_vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 4)
+
+        # Scrollable properties area
+        scroll_props = Gtk.ScrolledWindow()
+        scroll_props.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll_props.set_vexpand(True)
+
+        props_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        props_box.set_margin_top(8)
+        props_box.set_margin_bottom(8)
+        props_box.set_margin_start(12)
+        props_box.set_margin_end(12)
+
+        # ── Section: Manga Preset ──
+        lbl_preset_section = Gtk.Label()
+        lbl_preset_section.set_markup("<b>Manga Preset</b>")
+        lbl_preset_section.set_xalign(0.0)
+        props_box.pack_start(lbl_preset_section, False, False, 0)
+
+        preset_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        combo_preset = Gtk.ComboBoxText()
+        for pname in PRESETS.keys():
+            combo_preset.append_text(pname)
+        combo_preset.set_active(0)
+        preset_hbox.pack_start(combo_preset, True, True, 0)
+
+        btn_apply_preset = Gtk.Button(label="Load Preset")
+        preset_hbox.pack_start(btn_apply_preset, False, False, 0)
+        props_box.pack_start(preset_hbox, False, False, 0)
+
+        props_box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 4)
+
+        # ── Section: Font ──
+        lbl_font_section = Gtk.Label()
+        lbl_font_section.set_markup("<b>Font Family</b>  <span size='small' foreground='#888888'>(type to search)</span>")
+        lbl_font_section.set_xalign(0.0)
+        props_box.pack_start(lbl_font_section, False, False, 0)
+
+        entry_font_search = Gtk.Entry()
+        entry_font_search.set_placeholder_text("Search fonts...")
+        entry_font_search.set_text(mapped_bubbles[0]["font_family"])
+        props_box.pack_start(entry_font_search, False, False, 0)
+
+        # Font list (filtered)
+        font_scroll = Gtk.ScrolledWindow()
+        font_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        font_scroll.set_size_request(-1, 120)
+        font_scroll.set_min_content_height(80)
+
+        font_listbox = Gtk.ListBox()
+        font_listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        font_scroll.add(font_listbox)
+        props_box.pack_start(font_scroll, False, False, 0)
+
+        def populate_font_list(filter_text=""):
+            for child in font_listbox.get_children():
+                font_listbox.remove(child)
+            ft = filter_text.lower()
+            count = 0
+            for fname in all_font_names:
+                if ft and ft not in fname.lower():
+                    continue
+                row = Gtk.ListBoxRow()
+                lbl = Gtk.Label(label=fname)
+                lbl.set_xalign(0.0)
+                lbl.set_margin_start(6)
+                lbl.set_margin_top(2)
+                lbl.set_margin_bottom(2)
+                row.add(lbl)
+                row._font_name = fname
+                font_listbox.add(row)
+                count += 1
+                if count >= 100:
+                    break
+            font_listbox.show_all()
+
+        populate_font_list()
+
+        def on_font_search_changed(entry):
+            populate_font_list(entry.get_text())
+        entry_font_search.connect("changed", on_font_search_changed)
+
+        def on_font_selected(lb, row):
+            if row and hasattr(row, "_font_name"):
+                entry_font_search.handler_block_by_func(on_font_search_changed)
+                entry_font_search.set_text(row._font_name)
+                entry_font_search.handler_unblock_by_func(on_font_search_changed)
+                idx = current_selection[0]
+                mapped_bubbles[idx]["font_family"] = row._font_name
+        font_listbox.connect("row-activated", on_font_selected)
+
+        props_box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 4)
+
+        # ── Section: Text Properties ──
+        lbl_text_section = Gtk.Label()
+        lbl_text_section.set_markup("<b>Text Properties</b>")
+        lbl_text_section.set_xalign(0.0)
+        props_box.pack_start(lbl_text_section, False, False, 0)
+
+        grid_props = Gtk.Grid()
+        grid_props.set_column_spacing(12)
+        grid_props.set_row_spacing(8)
+
+        # Font Size
+        grid_props.attach(Gtk.Label(label="Font Size (px):"), 0, 0, 1, 1)
+        spin_font_size = Gtk.SpinButton.new_with_range(6.0, 72.0, 1.0)
+        spin_font_size.set_value(mapped_bubbles[0]["font_size"])
+        grid_props.attach(spin_font_size, 1, 0, 1, 1)
+
+        # Alignment
+        grid_props.attach(Gtk.Label(label="Alignment:"), 0, 1, 1, 1)
+        combo_alignment = Gtk.ComboBoxText()
+        for a in ["Center", "Left", "Right"]:
+            combo_alignment.append_text(a)
+        combo_alignment.set_active(0)
+        grid_props.attach(combo_alignment, 1, 1, 1, 1)
+
+        # Letter Spacing
+        grid_props.attach(Gtk.Label(label="Letter Spacing:"), 0, 2, 1, 1)
+        spin_letter = Gtk.SpinButton.new_with_range(-10.0, 20.0, 0.5)
+        spin_letter.set_value(0.0)
+        grid_props.attach(spin_letter, 1, 2, 1, 1)
+
+        # Line Spacing
+        grid_props.attach(Gtk.Label(label="Line Spacing:"), 0, 3, 1, 1)
+        spin_line = Gtk.SpinButton.new_with_range(-10.0, 20.0, 0.5)
+        spin_line.set_value(0.0)
+        grid_props.attach(spin_line, 1, 3, 1, 1)
+
+        # Text Color
+        grid_props.attach(Gtk.Label(label="Text Color:"), 0, 4, 1, 1)
+        color_btn = Gtk.ColorButton()
+        rgba_default = Gdk.RGBA() if 'Gdk' in dir() else None
+        try:
+            from gi.repository import Gdk
+            rgba_default = Gdk.RGBA()
+            rgba_default.parse("#000000")
+            color_btn.set_rgba(rgba_default)
+        except Exception:
+            pass
+        grid_props.attach(color_btn, 1, 4, 1, 1)
+
+        # Auto-fit
+        chk_autofit = Gtk.CheckButton(label="Auto-fit text to bubble")
+        chk_autofit.set_active(True)
+        grid_props.attach(chk_autofit, 0, 5, 2, 1)
+
+        # Direction
+        grid_props.attach(Gtk.Label(label="Direction:"), 0, 6, 1, 1)
+        combo_direction = Gtk.ComboBoxText()
+        combo_direction.append_text("Horizontal")
+        combo_direction.append_text("Vertical Stack")
+        combo_direction.set_active(0)
+        grid_props.attach(combo_direction, 1, 6, 1, 1)
+
+        # Left-align all grid labels
+        for child in grid_props.get_children():
+            if isinstance(child, Gtk.Label):
+                child.set_xalign(0.0)
+
+        props_box.pack_start(grid_props, False, False, 0)
+        scroll_props.add(props_box)
+        right_vbox.pack_start(scroll_props, True, True, 0)
+
+        # ── Bottom Button Bar ──
+        right_vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
+        btn_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_bar.set_margin_top(8)
+        btn_bar.set_margin_bottom(8)
+        btn_bar.set_margin_start(12)
+        btn_bar.set_margin_end(12)
+
+        btn_preview = Gtk.Button(label="⟳ Preview Selected")
+        btn_preview.get_style_context().add_class("suggested-action")
+        btn_bar.pack_start(btn_preview, True, True, 0)
+
+        btn_apply_all = Gtk.Button(label="✓ Apply All & Close")
+        btn_apply_all.get_style_context().add_class("suggested-action")
+        btn_bar.pack_start(btn_apply_all, True, True, 0)
+
+        btn_cancel = Gtk.Button(label="✕ Cancel")
+        btn_cancel.get_style_context().add_class("destructive-action")
+        btn_bar.pack_start(btn_cancel, False, False, 0)
+
+        right_vbox.pack_start(btn_bar, False, False, 0)
+        main_hbox.pack_start(right_vbox, True, True, 0)
+
+        # ══════════════════════════════════════════════════════════════
+        # ── 7. Wire up all signal handlers ──
+        # ══════════════════════════════════════════════════════════════
+
+        def save_current_to_state():
+            """Save the current widget values into the selected bubble's state dict."""
+            idx = current_selection[0]
+            b = mapped_bubbles[idx]
+            b["font_family"] = entry_font_search.get_text().strip()
+            b["font_size"] = int(spin_font_size.get_value())
+            b["alignment"] = combo_alignment.get_active_text() or "Center"
+            b["letter_spacing"] = spin_letter.get_value()
+            b["line_spacing"] = spin_line.get_value()
+            b["auto_fit"] = chk_autofit.get_active()
+            b["direction"] = combo_direction.get_active_text() or "Horizontal"
+            b["preset"] = combo_preset.get_active_text() or "Dialogue"
+            try:
+                from gi.repository import Gdk
+                rgba = color_btn.get_rgba()
+                r = int(rgba.red * 255)
+                g = int(rgba.green * 255)
+                bb = int(rgba.blue * 255)
+                b["color_hex"] = f"#{r:02x}{g:02x}{bb:02x}"
+            except Exception:
+                b["color_hex"] = "#000000"
+
+        def load_state_to_widgets(idx):
+            """Load a bubble's state dict into the property widgets."""
+            b = mapped_bubbles[idx]
+            entry_font_search.handler_block_by_func(on_font_search_changed)
+            entry_font_search.set_text(b["font_family"])
+            entry_font_search.handler_unblock_by_func(on_font_search_changed)
+            populate_font_list(b["font_family"])
+
+            spin_font_size.set_value(b["font_size"])
+            align_map = {"Center": 0, "Left": 1, "Right": 2}
+            combo_alignment.set_active(align_map.get(b["alignment"], 0))
+            spin_letter.set_value(b["letter_spacing"])
+            spin_line.set_value(b["line_spacing"])
+            chk_autofit.set_active(b["auto_fit"])
+            dir_map = {"Horizontal": 0, "Vertical Stack": 1}
+            combo_direction.set_active(dir_map.get(b["direction"], 0))
+
+            preset_names = list(PRESETS.keys())
+            if b["preset"] in preset_names:
+                combo_preset.set_active(preset_names.index(b["preset"]))
+            else:
+                combo_preset.set_active(0)
+
+            try:
+                from gi.repository import Gdk
+                rgba = Gdk.RGBA()
+                rgba.parse(b["color_hex"])
+                color_btn.set_rgba(rgba)
+            except Exception:
+                pass
+
+        def on_bubble_selected(lb, row):
+            if row and hasattr(row, "_bubble_index"):
+                save_current_to_state()
+                current_selection[0] = row._bubble_index
+                load_state_to_widgets(row._bubble_index)
+        listbox.connect("row-selected", on_bubble_selected)
+
+        def on_load_preset_clicked(btn):
+            preset_name = combo_preset.get_active_text()
+            if preset_name and preset_name in PRESETS:
+                p = PRESETS[preset_name]
+                idx = current_selection[0]
+                b = mapped_bubbles[idx]
+                b.update({
+                    "font_family": p["font_family"],
+                    "font_size": p["font_size"],
+                    "alignment": p["alignment"],
+                    "letter_spacing": p["letter_spacing"],
+                    "line_spacing": p["line_spacing"],
+                    "color_hex": p["color_hex"],
+                    "direction": p["direction"],
+                    "auto_fit": p["auto_fit"],
+                    "preset": preset_name,
+                })
+                load_state_to_widgets(idx)
+                # Update list label
+                row = listbox.get_row_at_index(idx)
+                if row and hasattr(row, "_label_widget"):
+                    preview_text = b["text"][:40] + ("..." if len(b["text"]) > 40 else "")
+                    row._label_widget.set_markup(f"<b>Bubble {idx + 1}</b>  <span foreground='#888888' size='small'>[{preset_name}]</span>")
+        btn_apply_preset.connect("clicked", on_load_preset_clicked)
+
+        def on_preset_all_clicked(btn):
+            preset_name = combo_preset.get_active_text()
+            if preset_name and preset_name in PRESETS:
+                p = PRESETS[preset_name]
+                for i, b in enumerate(mapped_bubbles):
+                    b.update({
+                        "font_family": p["font_family"],
+                        "font_size": p["font_size"],
+                        "alignment": p["alignment"],
+                        "letter_spacing": p["letter_spacing"],
+                        "line_spacing": p["line_spacing"],
+                        "color_hex": p["color_hex"],
+                        "direction": p["direction"],
+                        "auto_fit": p["auto_fit"],
+                        "preset": preset_name,
+                    })
+                    row = listbox.get_row_at_index(i)
+                    if row and hasattr(row, "_label_widget"):
+                        row._label_widget.set_markup(f"<b>Bubble {i + 1}</b>  <span foreground='#888888' size='small'>[{preset_name}]</span>")
+                load_state_to_widgets(current_selection[0])
+        btn_preset_all.connect("clicked", on_preset_all_clicked)
+
+        def on_preview_clicked(btn):
+            save_current_to_state()
+            idx = current_selection[0]
+            b = mapped_bubbles[idx]
+            font = self._resolve_font(b["font_family"])
+            if not font:
+                Gimp.message(f"Font '{b['font_family']}' not found.")
+                return
+
+            justification = {"Center": Gimp.TextJustification.CENTER,
+                             "Left": Gimp.TextJustification.LEFT,
+                             "Right": Gimp.TextJustification.RIGHT}.get(b["alignment"], Gimp.TextJustification.CENTER)
+
+            new_layer = self._apply_typeset_to_bubble(
+                image, translated_group, b, font, b["font_size"],
+                justification, b["auto_fit"], b["letter_spacing"],
+                b["line_spacing"], b["color_hex"], b["direction"])
+            if new_layer:
+                b["layer"] = new_layer
+            Gimp.displays_flush()
+        btn_preview.connect("clicked", on_preview_clicked)
+
+        def on_apply_all_clicked(btn):
+            save_current_to_state()
+            for b in mapped_bubbles:
+                font = self._resolve_font(b["font_family"])
+                if not font:
+                    continue
+                justification = {"Center": Gimp.TextJustification.CENTER,
+                                 "Left": Gimp.TextJustification.LEFT,
+                                 "Right": Gimp.TextJustification.RIGHT}.get(b["alignment"], Gimp.TextJustification.CENTER)
+                new_layer = self._apply_typeset_to_bubble(
+                    image, translated_group, b, font, b["font_size"],
+                    justification, b["auto_fit"], b["letter_spacing"],
+                    b["line_spacing"], b["color_hex"], b["direction"])
+                if new_layer:
+                    b["layer"] = new_layer
+            image.undo_group_end()
+            Gimp.displays_flush()
+            win.destroy()
+            Gtk.main_quit()
+        btn_apply_all.connect("clicked", on_apply_all_clicked)
+
+        def on_cancel_clicked(btn):
+            cancelled[0] = True
+            image.undo_group_end()
+            # Undo the entire group
+            try:
+                Gimp.get_pdb().run_procedure("gimp-image-undo", [GObject.Value(Gimp.Image.__gtype__, image)])
+            except Exception:
+                pass
+            Gimp.displays_flush()
+            win.destroy()
+            Gtk.main_quit()
+        btn_cancel.connect("clicked", on_cancel_clicked)
+
+        def on_window_delete(w, event):
+            on_cancel_clicked(None)
+            return True
+        win.connect("delete-event", on_window_delete)
+
+        # Select first bubble by default
+        first_row = listbox.get_row_at_index(0)
+        if first_row:
+            listbox.select_row(first_row)
+        load_state_to_widgets(0)
+
+        win.show_all()
+        Gtk.main()
+
+        if cancelled[0]:
+            return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
+
+        Gimp.message(f"Typesetting complete! Formatted {len(mapped_bubbles)} dialogue bubbles.")
+        return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+    # ── Helper: Resolve a font name to a Gimp.Font object ──
+    def _resolve_font(self, font_family):
+        """Try to resolve font_family to a Gimp.Font, with fallbacks."""
         font = None
         try:
             if hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name"):
@@ -2846,67 +3296,101 @@ class GimpScanlationSuite(Gimp.PlugIn):
                     font = Gimp.Font.get_by_name("Serif")
                 if not font:
                     font = Gimp.Font.get_by_name("Sans-serif")
-        except Exception as font_err:
-            sys.stderr.write(f"[Koharu Typesetter] Failed to resolve font: {font_err}\n")
+        except Exception as e:
+            sys.stderr.write(f"[Koharu Typesetter] Font resolve error: {e}\n")
+        return font
 
-        if not font:
-            Gimp.message(f"Error: Font '{font_family}' could not be resolved.")
-            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+    # ── Helper: Apply typeset styling to a single bubble ──
+    def _apply_typeset_to_bubble(self, image, group, bubble, font, font_size,
+                                  justification, auto_fit, letter_spacing,
+                                  line_spacing, color_hex, direction):
+        """Remove old layer, create new styled TextLayer, insert into group, center in bubble box."""
+        import textwrap
 
-        # Fit and wrap text helper
-        def fit_and_wrap_text(text, font_size_init, max_width, max_height, apply_scaling):
-            if not apply_scaling:
-                avg_char_width = max(1.0, font_size_init * 0.52)
-                chars_per_line = max(5, int(max_width / avg_char_width))
-                import textwrap
-                return "\n".join(textwrap.wrap(text, width=chars_per_line)), font_size_init
+        box = bubble["box"]
+        text_content = bubble["text"]
+        old_layer = bubble["layer"]
 
-            font_size = font_size_init
-            while font_size >= 10:
-                avg_char_width = max(1.0, font_size * 0.52)
-                chars_per_line = max(5, int(max_width / avg_char_width))
-                import textwrap
-                lines = textwrap.wrap(text, width=chars_per_line)
-                
-                total_height = len(lines) * (font_size * 1.3)
-                if total_height <= max_height or font_size == 10:
-                    return "\n".join(lines), font_size
-                font_size -= 2
-            return text, font_size
+        xmin, ymin, xmax, ymax = box
+        w = max(10, int(xmax - xmin))
+        h = max(10, int(ymax - ymin))
+        cx = int((xmin + xmax) / 2)
+        cy = int((ymin + ymax) / 2)
 
-        # Apply typesetting updates to each mapped bubble layer
-        for box, old_layer, text_content in mapped_bubbles:
-            xmin, ymin, xmax, ymax = box
-            w = max(10, xmax - xmin)
-            h = max(10, ymax - ymin)
-            cx = (xmin + xmax) // 2
-            cy = (ymin + ymax) // 2
-            
-            wrapped_text, font_size = fit_and_wrap_text(text_content, base_font_size, w, h, auto_fit)
-            
-            try:
-                # Remove the raw unstyled layer
+        # Handle vertical stacking: one character per line
+        if direction == "Vertical Stack":
+            display_text = "\n".join(list(text_content.replace(" ", "")))
+            final_size = font_size
+        elif auto_fit:
+            display_text, final_size = self._fit_and_wrap(text_content, font_size, w, h)
+        else:
+            avg_cw = max(1.0, font_size * 0.52)
+            cpl = max(5, int(w / avg_cw))
+            display_text = "\n".join(textwrap.wrap(text_content, width=cpl))
+            final_size = font_size
+
+        try:
+            # Remove existing layer
+            if old_layer and old_layer.is_valid():
                 image.remove_layer(old_layer)
-                
-                # Create and insert the styled text layer in GIMP
-                text_layer = Gimp.TextLayer.new(image, wrapped_text, font, font_size, Gimp.Unit.pixel())
-                if text_layer:
-                    text_layer.set_justification(gimp_justification)
-                    image.insert_layer(text_layer, translated_group, -1)
-                    
-                    rect_t = text_layer.get_buffer().get_extent()
-                    tw = rect_t.width
-                    th = rect_t.height
-                    
-                    tx = cx - tw // 2
-                    ty = cy - th // 2
-                    
-                    text_layer.set_offsets(int(tx), int(ty))
-            except Exception as render_err:
-                sys.stderr.write(f"[Koharu Typesetter] Failed to typeset bubble: {render_err}\n")
 
-        Gimp.message(f"Typesetting complete! Styled and aligned {len(mapped_bubbles)} dialogue layers in the 'Translated Text' group.")
-        return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+            text_layer = Gimp.TextLayer.new(image, display_text, font, final_size, Gimp.Unit.pixel())
+            if not text_layer:
+                return None
+
+            text_layer.set_justification(justification)
+
+            # Letter spacing
+            if letter_spacing != 0.0:
+                try:
+                    text_layer.set_letter_spacing(letter_spacing)
+                except Exception:
+                    pass
+
+            # Line spacing
+            if line_spacing != 0.0:
+                try:
+                    text_layer.set_line_spacing(line_spacing)
+                except Exception:
+                    pass
+
+            # Text color
+            try:
+                text_color = Gegl.Color.new(color_hex)
+                text_layer.set_color(text_color)
+            except Exception:
+                pass
+
+            # Insert into group
+            image.insert_layer(text_layer, group, -1)
+
+            # Center in bubble
+            rect_t = text_layer.get_buffer().get_extent()
+            tw = rect_t.width
+            th = rect_t.height
+            tx = cx - tw // 2
+            ty = cy - th // 2
+            text_layer.set_offsets(int(tx), int(ty))
+
+            return text_layer
+        except Exception as err:
+            sys.stderr.write(f"[Koharu Typesetter] Render error: {err}\n")
+            return None
+
+    # ── Helper: Fit and wrap text to bubble dimensions ──
+    def _fit_and_wrap(self, text, font_size_init, max_width, max_height):
+        """Scale font down and wrap text until it fits the bubble area."""
+        import textwrap
+        font_size = font_size_init
+        while font_size >= 10:
+            avg_cw = max(1.0, font_size * 0.52)
+            cpl = max(5, int(max_width / avg_cw))
+            lines = textwrap.wrap(text, width=cpl)
+            total_h = len(lines) * (font_size * 1.3)
+            if total_h <= max_height or font_size == 10:
+                return "\n".join(lines), font_size
+            font_size -= 2
+        return text, font_size
 
 
 
