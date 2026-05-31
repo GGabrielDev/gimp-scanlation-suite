@@ -396,7 +396,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "font-family",
                 "_Font Family",
                 "Font family to use for rendering",
-                "CC Yada Yada Yada",
+                "CCYadaYadaYada",
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_int_argument(
@@ -2718,7 +2718,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                     "box": box,
                     "layer": matched_child,
                     "text": matched_text,
-                    "font_family": config.get_property("font-family") or "CC Yada Yada Yada",
+                    "font_family": config.get_property("font-family") or "CCYadaYadaYada",
                     "font_size": config.get_property("base-font-size") or 18,
                     "alignment": config.get_property("alignment") or "Center",
                     "auto_fit": True,
@@ -2738,24 +2738,59 @@ class GimpScanlationSuite(Gimp.PlugIn):
         try:
             pdb = Gimp.get_pdb()
             if pdb:
-                result = pdb.run_procedure("gimp-fonts-get-list", [GObject.Value(GObject.TYPE_STRING, "")])
-                if result and result.length() > 1:
-                    str_array = result.index(1)
-                    if hasattr(str_array, "data"):
-                        all_font_names = list(str_array.data)
-                    elif isinstance(str_array, (list, tuple)):
-                        all_font_names = list(str_array)
-                    else:
-                        all_font_names = []
+                # Approach 1: Gimp.ValueArray with string arg
+                try:
+                    args = Gimp.ValueArray.new(1)
+                    args.insert(0, GObject.Value(GObject.TYPE_STRING, ""))
+                    result = pdb.run_procedure_argv("gimp-fonts-get-list", args)
+                    if result and result.length() > 1:
+                        str_val = result.index(1)
+                        if hasattr(str_val, "data"):
+                            all_font_names = list(str_val.data)
+                        elif isinstance(str_val, (list, tuple)):
+                            all_font_names = list(str_val)
+                except Exception as e1:
+                    sys.stderr.write(f"[Koharu Typesetter] Font enum approach 1 failed: {e1}\n")
+
+                # Approach 2: run_procedure with list arg
+                if not all_font_names:
+                    try:
+                        result = pdb.run_procedure("gimp-fonts-get-list", [GObject.Value(GObject.TYPE_STRING, "")])
+                        if result and result.length() > 1:
+                            str_val = result.index(1)
+                            if hasattr(str_val, "data"):
+                                all_font_names = list(str_val.data)
+                            elif isinstance(str_val, (list, tuple)):
+                                all_font_names = list(str_val)
+                    except Exception as e2:
+                        sys.stderr.write(f"[Koharu Typesetter] Font enum approach 2 failed: {e2}\n")
+
+            # Approach 3: fc-list system command as final fallback
+            if not all_font_names:
+                try:
+                    import subprocess
+                    fc_out = subprocess.check_output(["fc-list", "--format", "%{family}\n"], text=True, timeout=5)
+                    seen = set()
+                    for line in fc_out.strip().split("\n"):
+                        # fc-list can return comma-separated families
+                        for fam in line.split(","):
+                            fam = fam.strip()
+                            if fam and fam not in seen:
+                                seen.add(fam)
+                                all_font_names.append(fam)
+                except Exception as e3:
+                    sys.stderr.write(f"[Koharu Typesetter] fc-list fallback failed: {e3}\n")
         except Exception as font_list_err:
             sys.stderr.write(f"[Koharu Typesetter] Could not enumerate fonts: {font_list_err}\n")
+
         if not all_font_names:
             all_font_names = ["Sans-serif", "Serif", "Monospace"]
-        all_font_names.sort(key=lambda s: s.lower())
+        all_font_names = sorted(set(all_font_names), key=lambda s: s.lower())
+        sys.stderr.write(f"[Koharu Typesetter] Loaded {len(all_font_names)} fonts\n")
 
         # ── Non-interactive mode: apply defaults to all ──
         if run_mode != Gimp.RunMode.INTERACTIVE:
-            font_family = config.get_property("font-family") or "CC Yada Yada Yada"
+            font_family = config.get_property("font-family") or "CCYadaYadaYada"
             base_font_size = config.get_property("base-font-size") or 18
             alignment = config.get_property("alignment") or "Center"
             auto_fit = config.get_property("auto-fit") if config.get_property("auto-fit") is not None else True
@@ -2785,12 +2820,12 @@ class GimpScanlationSuite(Gimp.PlugIn):
         # Manga Presets definition
         PRESETS = {
             "Dialogue": {
-                "font_family": "CC Yada Yada Yada", "font_size": 18,
+                "font_family": "CCYadaYadaYada", "font_size": 18,
                 "alignment": "Center", "letter_spacing": 0.0, "line_spacing": 0.0,
                 "color_hex": "#000000", "direction": "Horizontal", "auto_fit": True,
             },
             "Shout / Title": {
-                "font_family": "CC Hush Hush", "font_size": 24,
+                "font_family": "CCHushHush", "font_size": 24,
                 "alignment": "Center", "letter_spacing": 0.0, "line_spacing": 0.0,
                 "color_hex": "#000000", "direction": "Horizontal", "auto_fit": True,
             },
@@ -2800,17 +2835,17 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "color_hex": "#000000", "direction": "Horizontal", "auto_fit": True,
             },
             "Whisper / Thought": {
-                "font_family": "CC Yada Yada Yada", "font_size": 14,
+                "font_family": "CCYadaYadaYada", "font_size": 14,
                 "alignment": "Center", "letter_spacing": 0.0, "line_spacing": 0.0,
                 "color_hex": "#555555", "direction": "Horizontal", "auto_fit": True,
             },
             "SFX Vertical": {
-                "font_family": "CC Hush Hush", "font_size": 28,
+                "font_family": "CCHushHush", "font_size": 28,
                 "alignment": "Center", "letter_spacing": 4.0, "line_spacing": -4.0,
                 "color_hex": "#000000", "direction": "Vertical Stack", "auto_fit": False,
             },
             "SFX Horizontal": {
-                "font_family": "CC Hush Hush", "font_size": 28,
+                "font_family": "CCHushHush", "font_size": 28,
                 "alignment": "Center", "letter_spacing": 2.0, "line_spacing": 0.0,
                 "color_hex": "#000000", "direction": "Horizontal", "auto_fit": True,
             },
@@ -3315,21 +3350,26 @@ class GimpScanlationSuite(Gimp.PlugIn):
     def _resolve_font(self, font_family):
         """Try to resolve font_family to a Gimp.Font, with fallbacks."""
         font = None
+        fallbacks = [
+            font_family,
+            "CCYadaYadaYada",
+            "CCHushHush",
+            "Liberation Serif",
+            "Georgia",
+            "Serif",
+            "Sans-serif",
+            "Sans",
+        ]
         try:
             if hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name"):
-                font = Gimp.Font.get_by_name(font_family)
-                if not font:
-                    font = Gimp.Font.get_by_name("CC Yada Yada Yada")
-                if not font:
-                    font = Gimp.Font.get_by_name("CC Hush Hush")
-                if not font:
-                    font = Gimp.Font.get_by_name("Liberation Serif")
-                if not font:
-                    font = Gimp.Font.get_by_name("Georgia")
-                if not font:
-                    font = Gimp.Font.get_by_name("Serif")
-                if not font:
-                    font = Gimp.Font.get_by_name("Sans-serif")
+                for name in fallbacks:
+                    if not name:
+                        continue
+                    font = Gimp.Font.get_by_name(name)
+                    if font:
+                        if name != font_family:
+                            sys.stderr.write(f"[Koharu Typesetter] Font '{font_family}' not found, fell back to '{name}'\n")
+                        break
         except Exception as e:
             sys.stderr.write(f"[Koharu Typesetter] Font resolve error: {e}\n")
         return font
