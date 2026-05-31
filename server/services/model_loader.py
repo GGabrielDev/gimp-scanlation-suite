@@ -86,7 +86,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
             
         sys.stderr.write(f"[Server Model Loader] Initializing Diffusion Inpainting model '{model_id}'...\n")
         try:
-            from diffusers import StableDiffusionInpaintPipeline
+            from diffusers import AutoPipelineForInpainting
             import torch
         except ImportError:
             raise ImportError(
@@ -96,12 +96,19 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
             
         cfg = MODELS_CONFIG[model_id]
         try:
-            pipe = StableDiffusionInpaintPipeline.from_pretrained(
-                cfg["repo"],
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                safety_checker=None, # Uncensored support: disable safety checker
-                requires_safety_checker=False
-            )
+            try:
+                pipe = AutoPipelineForInpainting.from_pretrained(
+                    cfg["repo"],
+                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                    safety_checker=None, # Uncensored support for SD 1.5 style models
+                    requires_safety_checker=False
+                )
+            except TypeError:
+                # Fallback for SDXL which does not accept safety_checker parameters
+                pipe = AutoPipelineForInpainting.from_pretrained(
+                    cfg["repo"],
+                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+                )
             if torch.cuda.is_available():
                 pipe = pipe.to("cuda")
                 try:

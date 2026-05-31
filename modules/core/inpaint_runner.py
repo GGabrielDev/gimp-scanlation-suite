@@ -226,8 +226,8 @@ def run_inpaint_processing(procedure, image, drawables, config):
             repo = "ogkalu/aot-inpainting"
             filename = "aot.onnx"
             local_filename = "aot-inpainting.onnx"
-        elif inpaint_model == "sd-inpainting":
-            Gimp.message("Error: sd-inpainting is only supported in Remote inference mode (running on the server with GPU). Please switch Inference Mode to Remote.")
+        elif inpaint_model in ["sd-inpainting", "anime-inpaint", "sdxl-inpainting"]:
+            Gimp.message(f"Error: {inpaint_model} is only supported in Remote inference mode (running on the server with GPU). Please switch Inference Mode to Remote.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
         else:
             Gimp.message(f"Error: Unknown local model option '{inpaint_model}'")

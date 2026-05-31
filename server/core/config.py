@@ -165,5 +165,25 @@ MODELS_CONFIG = {
         "local_projector_name": None,
         "handler_class": "DiffusionInpainting",
         "n_ctx": 0
+    },
+    "anime-inpaint": {
+        "repo": "Uminosachi/anime-inpaint",
+        "file": None,
+        "projector_repo": None,
+        "projector_file": None,
+        "local_name": None,
+        "local_projector_name": None,
+        "handler_class": "DiffusionInpainting",
+        "n_ctx": 0
+    },
+    "sdxl-inpainting": {
+        "repo": "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
+        "file": None,
+        "projector_repo": None,
+        "projector_file": None,
+        "local_name": None,
+        "local_projector_name": None,
+        "handler_class": "DiffusionInpainting",
+        "n_ctx": 0
     }
 }
