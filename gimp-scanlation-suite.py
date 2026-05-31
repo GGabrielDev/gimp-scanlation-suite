@@ -1606,8 +1606,6 @@ class GimpScanlationSuite(Gimp.PlugIn):
                         crop_mask_512 = np.array(crop_mask_pil)
                         
                         img_feed = crop_img_512.astype(np.float32) / 255.0
-                        if inpaint_model == "aot-inpainting":
-                            img_feed = img_feed * 2.0 - 1.0
                         img_feed = np.transpose(img_feed, (2, 0, 1))
                         img_feed = np.expand_dims(img_feed, axis=0)
                         
@@ -1630,8 +1628,6 @@ class GimpScanlationSuite(Gimp.PlugIn):
                         
                         out_crop = np.squeeze(out_crop, axis=0)
                         out_crop = np.transpose(out_crop, (1, 2, 0))
-                        if inpaint_model == "aot-inpainting":
-                            out_crop = (out_crop + 1.0) / 2.0
                         out_crop = np.clip(out_crop * 255.0, 0.0, 255.0).astype(np.uint8)
                         
                         # Resize back
