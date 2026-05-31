@@ -33,39 +33,42 @@ def parse_arbiter_output(text_final: str) -> tuple[str, str]:
     if not text_final:
         return "", ""
 
-    # 1. Try to find transcription content with regex (handling common typos)
+    # 1. Try to find transcription content with regex (handling common typos and optional spaces inside tag brackets)
     tx_match = re.search(
-        r'<(?:transcription|transcripition|transcribe|output|result)>(.*?)</(?:transcription|transcripition|transcribe|output|result)>',
+        r'<\s*(?:transcription|transcripition|transcribe|output|result)\s*>(.*?)<\s*/\s*(?:transcription|transcripition|transcribe|output|result)\s*>',
         text_final,
         re.DOTALL | re.IGNORECASE
     )
 
     # 2. Try to find thinking content with regex
-    think_match = re.search(r'<thinking>(.*?)</thinking>', text_final, re.DOTALL | re.IGNORECASE)
+    think_match = re.search(r'<\s*thinking\s*>(.*?)<\s*/\s*thinking\s*>', text_final, re.DOTALL | re.IGNORECASE)
 
     thinking = ""
     if think_match:
         thinking = think_match.group(1).strip()
     else:
         # Fallback if no closing </thinking> but has opening <thinking>
-        think_open = re.search(r'<thinking>(.*)', text_final, re.DOTALL | re.IGNORECASE)
+        think_open = re.search(r'<\s*thinking\s*>(.*)', text_final, re.DOTALL | re.IGNORECASE)
         if think_open:
             content = think_open.group(1)
             # Stop at opening transcription tag if present
-            tx_open = re.search(r'<(?:transcription|transcripition|transcribe|output|result)>', content, re.IGNORECASE)
+            tx_open = re.search(r'<\s*(?:transcription|transcripition|transcribe|output|result)\s*>', content, re.IGNORECASE)
             if tx_open:
                 thinking = content[:tx_open.start()].strip()
             else:
                 thinking = content.strip()
 
     transcription = ""
+    has_explicit_transcription_tags = False
     if tx_match:
         transcription = tx_match.group(1).strip()
+        has_explicit_transcription_tags = True
     else:
         # Fallback 1: Has opening transcription tag but no closing tag (or cut off)
-        tx_open = re.search(r'<(?:transcription|transcripition|transcribe|output|result)>', text_final, re.IGNORECASE)
+        tx_open = re.search(r'<\s*(?:transcription|transcripition|transcribe|output|result)\s*>', text_final, re.IGNORECASE)
         if tx_open:
             transcription = text_final[tx_open.end():].strip()
+            has_explicit_transcription_tags = True
         else:
             # Fallback 2: No transcription tag at all, use text outside thinking
             if think_match:
@@ -78,7 +81,7 @@ def parse_arbiter_output(text_final: str) -> tuple[str, str]:
     # Clean up thinking text by removing the transcription content and tags if nested
     if thinking:
         thinking = re.sub(
-            r'</?(?:transcription|transcripition|transcribe|output|result)>',
+            r'<\s*/?\s*(?:transcription|transcripition|transcribe|output|result)\s*>',
             '',
             thinking,
             flags=re.IGNORECASE
@@ -91,17 +94,19 @@ def parse_arbiter_output(text_final: str) -> tuple[str, str]:
         # Remove any <|...|> tokens
         transcription = re.sub(r'<\|.*?\|>', '', transcription).strip()
         # Remove any tags
-        transcription = re.sub(r'</?(?:transcription|transcripition|transcribe|output|result|thinking)>', '', transcription, flags=re.IGNORECASE).strip()
+        transcription = re.sub(r'<\s*/?\s*(?:transcription|transcripition|transcribe|output|result|thinking)\s*>', '', transcription, flags=re.IGNORECASE).strip()
         
         # Heuristic for conversational garbage:
-        # If there are multiple lines, extract the last non-empty line
-        lines = [l.strip() for l in transcription.split('\n') if l.strip()]
-        if len(lines) > 1:
-            last_line = lines[-1]
-            last_line_clean = last_line.strip('"\'「」')
-            # If the last line is not conversational instruction and is short, prefer it
-            if not any(word in last_line.lower() for word in ["ensure", "transcribe", "output", "thinking", "explanation", "tag", "produce", "data"]):
-                transcription = last_line_clean
+        # ONLY apply this if we did NOT find explicit transcription tags!
+        # If we have explicit tags, the model specifically delimited the final transcription, so we trust it fully.
+        if not has_explicit_transcription_tags:
+            lines = [l.strip() for l in transcription.split('\n') if l.strip()]
+            if len(lines) > 1:
+                last_line = lines[-1]
+                last_line_clean = last_line.strip('"\'「」')
+                # If the last line is not conversational instruction and is short, prefer it
+                if not any(word in last_line.lower() for word in ["ensure", "transcribe", "output", "thinking", "explanation", "tag", "produce", "data"]):
+                    transcription = last_line_clean
 
     return thinking, transcription
 
