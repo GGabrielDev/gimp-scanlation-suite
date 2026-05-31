@@ -1113,6 +1113,9 @@ def dispatch(request: BatchRequest):
                         mask_feed = np.expand_dims(mask_feed, axis=0)
                         mask_feed = np.expand_dims(mask_feed, axis=0)
                         
+                        # Zero out the masked region in the input image for correct in-distribution inference
+                        img_feed = img_feed * (1.0 - mask_feed)
+                        
                         input_names = [i.name for i in session.get_inputs()]
                         feeds = {}
                         for name in input_names:
