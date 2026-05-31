@@ -372,7 +372,15 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "",
                 GObject.ParamFlags.READWRITE
             )
+            procedure.add_string_argument(
+                "reading-order",
+                "Reading _Order Heuristic",
+                "Sort dialogues: Japanese (RTL), Western (LTR), Top-to-Bottom, Creation Order",
+                "Japanese (RTL)",
+                GObject.ParamFlags.READWRITE
+            )
             return procedure
+
 
         return None
 
@@ -1900,16 +1908,6 @@ class GimpScanlationSuite(Gimp.PlugIn):
             Gimp.message("No valid bounding boxes found in the selected path.")
             return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
-        # Sort bounding boxes in Japanese reading order (top-right to bottom-left column heuristic)
-        def get_sort_key(box):
-            xmin, ymin, xmax, ymax = box
-            cx = (xmin + xmax) / 2.0
-            cy = (ymin + ymax) / 2.0
-            col = int((full_w - cx) / max(1.0, full_w / 3.0))
-            return (col, cy)
-
-        bounding_boxes.sort(key=get_sort_key)
-
         # 4. Locate the "OCR Transcriptions" group layer and extract text layers
         ocr_group = None
         for layer in image.get_layers():
@@ -1944,6 +1942,49 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 box_ocr_texts.append(combined_text)
             else:
                 box_ocr_texts.append("")
+
+        # Initialize bubble states in original stroke/path detection order
+        bubble_states = []
+        for idx, box in enumerate(bounding_boxes):
+            bubble_states.append({
+                "original_index": idx,
+                "box": box,
+                "text": box_ocr_texts[idx],
+                "speaker": "Unassigned / Narrative",
+                "context": "",
+                "skip": False
+            })
+
+        def sort_bubble_states(heuristic):
+            if heuristic == "Japanese (RTL)":
+                def get_sort_key(state):
+                    xmin, ymin, xmax, ymax = state["box"]
+                    cx = (xmin + xmax) / 2.0
+                    cy = (ymin + ymax) / 2.0
+                    col = int((full_w - cx) / max(1.0, full_w / 3.0))
+                    return (col, cy)
+                bubble_states.sort(key=get_sort_key)
+            elif heuristic == "Western (LTR)":
+                def get_sort_key(state):
+                    xmin, ymin, xmax, ymax = state["box"]
+                    cx = (xmin + xmax) / 2.0
+                    cy = (ymin + ymax) / 2.0
+                    col = int(cx / max(1.0, full_w / 3.0))
+                    return (col, cy)
+                bubble_states.sort(key=get_sort_key)
+            elif heuristic == "Top-to-Bottom":
+                def get_sort_key(state):
+                    xmin, ymin, xmax, ymax = state["box"]
+                    cx = (xmin + xmax) / 2.0
+                    cy = (ymin + ymax) / 2.0
+                    return (cy, cx)
+                bubble_states.sort(key=get_sort_key)
+            elif heuristic == "Creation Order":
+                bubble_states.sort(key=lambda s: s["original_index"])
+
+        initial_reading_order = config.get_property("reading-order") or "Japanese (RTL)"
+        sort_bubble_states(initial_reading_order)
+
 
         # 5. Build Gtk Dialog interface (tabbed Gtk.Notebook)
         if run_mode == Gimp.RunMode.INTERACTIVE:
@@ -2040,11 +2081,27 @@ class GimpScanlationSuite(Gimp.PlugIn):
             entry_font = Gtk.Entry()
             entry_font.set_text(config.get_property("font-family") or "Sans-serif")
             grid_settings.attach(entry_font, 1, 6, 1, 1)
+
+            # Reading Order Heuristic
+            lbl_ro = Gtk.Label(label="Reading Order Heuristic:")
+            lbl_ro.set_xalign(0.0)
+            grid_settings.attach(lbl_ro, 0, 7, 1, 1)
+            
+            combo_ro = Gtk.ComboBoxText()
+            ro_options = ["Japanese (RTL)", "Western (LTR)", "Top-to-Bottom", "Creation Order"]
+            for ro in ro_options:
+                combo_ro.append_text(ro)
+            stored_ro = config.get_property("reading-order") or "Japanese (RTL)"
+            if stored_ro in ro_options:
+                combo_ro.set_active(ro_options.index(stored_ro))
+            else:
+                combo_ro.set_active(0)
+            grid_settings.attach(combo_ro, 1, 7, 1, 1)
             
             # Global Context Label
             lbl_global = Gtk.Label(label="Global Scene Context / Style Prompts:")
             lbl_global.set_xalign(0.0)
-            grid_settings.attach(lbl_global, 0, 7, 2, 1)
+            grid_settings.attach(lbl_global, 0, 8, 2, 1)
             
             # Global Context TextView
             scroll_global = Gtk.ScrolledWindow()
@@ -2055,7 +2112,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             buf_global = txt_global.get_buffer()
             buf_global.set_text(config.get_property("global-context") or "")
             scroll_global.add(txt_global)
-            grid_settings.attach(scroll_global, 0, 8, 2, 1)
+            grid_settings.attach(scroll_global, 0, 9, 2, 1)
             
             notebook.append_page(grid_settings, Gtk.Label(label="Settings"))
             
@@ -2126,85 +2183,125 @@ class GimpScanlationSuite(Gimp.PlugIn):
                     crops.append(img_np[y0:y1, x0:x1, :])
                 else:
                     crops.append(None)
-            
-            for idx, box in enumerate(bounding_boxes):
-                frame = Gtk.Frame()
-                frame.set_label(f"Bubble #{idx+1} (Reading Order)")
+
+            def save_current_edits():
+                for row_idx, (combo_spk, txt_src, entry_hint, chk_exclude, _) in enumerate(row_widgets):
+                    state = bubble_states[row_idx]
+                    state["speaker"] = combo_spk.get_active_text() or "Unassigned / Narrative"
+                    buf = txt_src.get_buffer()
+                    state["text"] = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
+                    state["context"] = entry_hint.get_text()
+                    state["skip"] = chk_exclude.get_active()
+
+            def rebuild_dialogue_queue():
+                for child in box_blocks.get_children():
+                    child.destroy()
+                del row_widgets[:]
                 
-                grid_row = Gtk.Grid()
-                grid_row.set_column_spacing(10)
-                grid_row.set_row_spacing(6)
-                grid_row.set_margin_top(8)
-                grid_row.set_margin_bottom(8)
-                grid_row.set_margin_start(8)
-                grid_row.set_margin_end(8)
-                
-                # Preview Image
-                np_crop = crops[idx]
-                if np_crop is not None:
-                    pb = get_crop_pixbuf(np_crop)
-                    if pb:
-                        img_widget = Gtk.Image.new_from_pixbuf(pb)
+                for idx, state in enumerate(bubble_states):
+                    box = state["box"]
+                    frame = Gtk.Frame()
+                    frame.set_label(f"Bubble #{idx+1} (Reading Order)")
+                    
+                    grid_row = Gtk.Grid()
+                    grid_row.set_column_spacing(10)
+                    grid_row.set_row_spacing(6)
+                    grid_row.set_margin_top(8)
+                    grid_row.set_margin_bottom(8)
+                    grid_row.set_margin_start(8)
+                    grid_row.set_margin_end(8)
+                    
+                    # Preview Image
+                    np_crop = crops[state["original_index"]]
+                    if np_crop is not None:
+                        pb = get_crop_pixbuf(np_crop)
+                        if pb:
+                            img_widget = Gtk.Image.new_from_pixbuf(pb)
+                        else:
+                            img_widget = Gtk.Label(label="[No Preview]")
                     else:
                         img_widget = Gtk.Label(label="[No Preview]")
-                else:
-                    img_widget = Gtk.Label(label="[No Preview]")
-                
-                img_widget.set_size_request(100, 70)
-                grid_row.attach(img_widget, 0, 0, 1, 2)
-                
-                # Exclude checkbox
-                chk_exclude = Gtk.CheckButton(label="Skip translation")
-                grid_row.attach(chk_exclude, 1, 0, 1, 1)
-                
-                # Context Hint Entry
-                entry_hint = Gtk.Entry()
-                entry_hint.set_placeholder_text("e.g. whispering, angry")
-                entry_hint.set_width_chars(20)
-                
-                # Speaker Dropdown
-                combo_spk = Gtk.ComboBoxText()
-                
-                def refresh_speakers(spk_combo=combo_spk):
-                    active_text = spk_combo.get_active_text()
-                    spk_combo.remove_all()
-                    spk_combo.append_text("Unassigned / Narrative")
-                    for ent in char_entries:
-                        name = ent.get_text().strip()
-                        if name:
-                            spk_combo.append_text(name)
                     
+                    img_widget.set_size_request(100, 70)
+                    grid_row.attach(img_widget, 0, 0, 1, 2)
+                    
+                    # Exclude checkbox
+                    chk_exclude = Gtk.CheckButton(label="Skip translation")
+                    chk_exclude.set_active(state["skip"])
+                    grid_row.attach(chk_exclude, 1, 0, 1, 1)
+                    
+                    # Context Hint Entry
+                    entry_hint = Gtk.Entry()
+                    entry_hint.set_placeholder_text("e.g. whispering, angry")
+                    entry_hint.set_width_chars(20)
+                    entry_hint.set_text(state["context"])
+                    
+                    # Speaker Dropdown
+                    combo_spk = Gtk.ComboBoxText()
+                    
+                    def refresh_speakers(spk_combo=combo_spk):
+                        active_text = spk_combo.get_active_text()
+                        spk_combo.remove_all()
+                        spk_combo.append_text("Unassigned / Narrative")
+                        spk_combo.append_text("SFX / Onomatopoeia")
+                        for ent in char_entries:
+                            name = ent.get_text().strip()
+                            if name:
+                                spk_combo.append_text(name)
+                        
+                        found = False
+                        for i in range(spk_combo.get_model().iter_n_children(None)):
+                            spk_combo.set_active(i)
+                            if spk_combo.get_active_text() == active_text:
+                                found = True
+                                break
+                        if not found:
+                            spk_combo.set_active(0)
+                    
+                    refresh_speakers()
+                    
+                    target_spk = state["speaker"]
+                    model = combo_spk.get_model()
                     found = False
-                    for i in range(spk_combo.get_model().iter_n_children(None)):
-                        spk_combo.set_active(i)
-                        if spk_combo.get_active_text() == active_text:
+                    for i in range(model.iter_n_children(None)):
+                        combo_spk.set_active(i)
+                        if combo_spk.get_active_text() == target_spk:
                             found = True
                             break
                     if not found:
-                        spk_combo.set_active(0)
-                
-                refresh_speakers()
-                grid_row.attach(combo_spk, 2, 0, 1, 1)
-                grid_row.attach(entry_hint, 3, 0, 1, 1)
-                
-                # Source Text (TextView inside ScrolledWindow for multi-line editing)
-                scroll_src = Gtk.ScrolledWindow()
-                scroll_src.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-                scroll_src.set_size_request(300, 45)
-                txt_src = Gtk.TextView()
-                txt_src.set_wrap_mode(Gtk.WrapMode.WORD)
-                buf_src = txt_src.get_buffer()
-                buf_src.set_text(box_ocr_texts[idx])
-                scroll_src.add(txt_src)
-                
-                grid_row.attach(scroll_src, 1, 1, 3, 1)
-                
-                frame.add(grid_row)
-                box_blocks.pack_start(frame, False, False, 0)
-                
-                row_widgets.append((combo_spk, txt_src, entry_hint, chk_exclude, refresh_speakers))
-                
-            # Connect characters renaming update
+                        combo_spk.set_active(0)
+                        
+                    grid_row.attach(combo_spk, 2, 0, 1, 1)
+                    grid_row.attach(entry_hint, 3, 0, 1, 1)
+                    
+                    # Source Text (TextView inside ScrolledWindow for multi-line editing)
+                    scroll_src = Gtk.ScrolledWindow()
+                    scroll_src.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+                    scroll_src.set_size_request(300, 45)
+                    txt_src = Gtk.TextView()
+                    txt_src.set_wrap_mode(Gtk.WrapMode.WORD)
+                    buf_src = txt_src.get_buffer()
+                    buf_src.set_text(state["text"])
+                    scroll_src.add(txt_src)
+                    
+                    grid_row.attach(scroll_src, 1, 1, 3, 1)
+                    
+                    frame.add(grid_row)
+                    box_blocks.pack_start(frame, False, False, 0)
+                    
+                    row_widgets.append((combo_spk, txt_src, entry_hint, chk_exclude, refresh_speakers))
+
+            rebuild_dialogue_queue()
+
+            def on_reading_order_changed(widget):
+                save_current_edits()
+                new_ro = combo_ro.get_active_text()
+                sort_bubble_states(new_ro)
+                rebuild_dialogue_queue()
+                box_blocks.show_all()
+            
+            combo_ro.connect("changed", on_reading_order_changed)
+
             def on_char_name_changed(widget):
                 for row in row_widgets:
                     row[4]()
@@ -2261,7 +2358,6 @@ class GimpScanlationSuite(Gimp.PlugIn):
             
             dialog.show_all()
             response = dialog.run()
-            
             if response == Gtk.ResponseType.OK:
                 # Save settings to config
                 src_lang = combo_src.get_active_text()
@@ -2271,6 +2367,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 trans_model = combo_model.get_active_text()
                 enable_thinking = chk_thinking.get_active()
                 font_family = entry_font.get_text().strip()
+                reading_order = combo_ro.get_active_text()
                 
                 buf_global_ctx = txt_global.get_buffer()
                 global_ctx = buf_global_ctx.get_text(buf_global_ctx.get_start_iter(), buf_global_ctx.get_end_iter(), True).strip()
@@ -2283,23 +2380,29 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 config.set_property("translation-model", trans_model)
                 config.set_property("enable-thinking", enable_thinking)
                 config.set_property("global-context", global_ctx)
+                config.set_property("reading-order", reading_order)
+                
+                # Save current edits from widgets to bubble_states
+                save_current_edits()
                 
                 # Extract dialog queue rows
                 payload = []
                 included_box_indices = []
-                for idx, (combo_spk, txt_src, entry_hint, chk_exclude, _) in enumerate(row_widgets):
-                    if chk_exclude.get_active():
+                for idx, state in enumerate(bubble_states):
+                    if state["skip"]:
                         continue
                     
-                    buf = txt_src.get_buffer()
-                    src_text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True).strip()
+                    src_text = state["text"].strip()
                     if not src_text:
                         continue
                         
-                    speaker = combo_spk.get_active_text()
+                    speaker = state["speaker"]
                     if speaker == "Unassigned / Narrative":
                         speaker = ""
-                    context = entry_hint.get_text().strip()
+                    elif speaker == "SFX / Onomatopoeia":
+                        speaker = "SFX"
+                        
+                    context = state["context"].strip()
                     
                     payload.append({
                         "index": idx + 1,
@@ -2307,7 +2410,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                         "speaker": speaker,
                         "context": context
                     })
-                    included_box_indices.append(idx)
+                    included_box_indices.append(state["original_index"])
                 
                 dialog.destroy()
             else:
@@ -2323,18 +2426,23 @@ class GimpScanlationSuite(Gimp.PlugIn):
             trans_model = config.get_property("translation-model") or "DeepSeek"
             enable_thinking = config.get_property("enable-thinking")
             global_ctx = config.get_property("global-context") or ""
+            reading_order = config.get_property("reading-order") or "Japanese (RTL)"
+            
+            # Sort states
+            sort_bubble_states(reading_order)
             
             payload = []
             included_box_indices = []
-            for idx, text in enumerate(box_ocr_texts):
-                if text.strip():
+            for state in bubble_states:
+                src_text = state["text"].strip()
+                if src_text:
                     payload.append({
-                        "index": idx + 1,
-                        "text": text,
+                        "index": state["original_index"] + 1,
+                        "text": src_text,
                         "speaker": "",
                         "context": ""
                     })
-                    included_box_indices.append(idx)
+                    included_box_indices.append(state["original_index"])
 
         if not payload:
             Gimp.message("No dialogue blocks selected for translation.")
