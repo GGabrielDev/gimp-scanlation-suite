@@ -167,12 +167,41 @@ def run_inpaint_processing(procedure, image, drawables, config):
             
             bounding_boxes.append((xmin, ymin, xmax, ymax))
 
-            # Extract anchor points (in GIMP, Bezier nodes have 3 point pairs each: control1, anchor, control2)
+            # Interpolate Bezier curve between nodes to trace curves/rounded parts precisely
+            closed = True
+            try:
+                closed = target_path.stroke_is_closed(stroke_id)
+            except Exception:
+                pass
+
             anchors = []
             if len(coords) >= 6:
-                for i in range(0, len(coords), 6):
-                    if i + 3 < len(coords):
-                        anchors.append((coords[i+2], coords[i+3]))
+                num_nodes = len(coords) // 6
+                for j in range(num_nodes):
+                    next_j = (j + 1) % num_nodes
+                    idx_j = j * 6
+                    
+                    p0 = (coords[idx_j + 2], coords[idx_j + 3]) # anchor
+                    p1 = (coords[idx_j + 4], coords[idx_j + 5]) # handle out
+                    
+                    idx_next = next_j * 6
+                    p2 = (coords[idx_next], coords[idx_next + 1]) # handle in
+                    p3 = (coords[idx_next + 2], coords[idx_next + 3]) # anchor
+                    
+                    if next_j == 0 and not closed:
+                        break
+                        
+                    # Evaluate 15 points per Bezier segment for high-resolution curves
+                    num_bezier_points = 15
+                    for step in range(num_bezier_points):
+                        t = step / float(num_bezier_points)
+                        x = (1-t)**3 * p0[0] + 3*(1-t)**2 * t * p1[0] + 3*(1-t) * t**2 * p2[0] + t**3 * p3[0]
+                        y = (1-t)**3 * p0[1] + 3*(1-t)**2 * t * p1[1] + 3*(1-t) * t**2 * p2[1] + t**3 * p3[1]
+                        anchors.append((x, y))
+                
+                if not closed and num_nodes > 0:
+                    idx_last = (num_nodes - 1) * 6
+                    anchors.append((coords[idx_last + 2], coords[idx_last + 3]))
             else:
                 anchors = [(coords[i], coords[i+1]) for i in range(0, len(coords), 2) if i + 1 < len(coords)]
             
