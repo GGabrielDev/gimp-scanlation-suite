@@ -45,13 +45,67 @@ def generate_vlm_prompt(api_base: str, default_prompt: str) -> str:
         sys.stderr.write(f"[Server Inpaint Service] Failed to generate auto-prompt via VLM: {e}\n")
         return default_prompt or "manga reconstruction, detailed background, high quality line art"
 
+def generate_local_vlm_prompt(model_id: str, crop_img_pil: Image.Image) -> str:
+    """
+    Queries a local VLM model with the crop image to generate keywords for Stable Diffusion inpainting.
+    """
+    try:
+        from server.services.model_loader import get_or_load_model, unload_model
+        import io
+        import base64
+        
+        # Convert PIL image to base64 data URL
+        buf = io.BytesIO()
+        crop_img_pil.save(buf, format="PNG")
+        img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        img_url = f"data:image/png;base64,{img_b64}"
+        
+        # Load VLM model
+        vlm = get_or_load_model(model_id)
+        if not vlm:
+            return "manga reconstruction, detailed background, high quality line art"
+            
+        vlm.reset()
+        prompt_text = (
+            "Describe the drawing in this manga crop (screentone, lines, background pattern, hair, clothes). "
+            "Ignore the text and bubble, focus on the artwork. "
+            "Output ONLY a short list of comma-separated keywords, under 10 words."
+        )
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": img_url}},
+                    {"type": "text", "text": prompt_text}
+                ]
+            }
+        ]
+        
+        response = vlm.create_chat_completion(messages=messages)
+        res_text = response["choices"][0]["message"]["content"].strip()
+        res_text = res_text.strip('"\'')
+        if ":" in res_text and not "," in res_text.split(":", 1)[0]:
+            res_text = res_text.split(":", 1)[1].strip()
+        return res_text
+    except Exception as e:
+        sys.stderr.write(f"[Server Inpaint Service] Local VLM auto-prompt generation failed: {e}\n")
+        return "manga reconstruction, detailed background, high quality line art"
+    finally:
+        unload_model(model_id)
+
 def run_inpaint_generator(model: str, batch_payload: list, options: dict):
     """
     Generator yielding newline-separated JSON progress strings, ending with inpainted base64.
     """
     try:
         yield json.dumps({"type": "progress", "percentage": 0.0, "message": "Loading inpainting model..."}) + "\n"
-        session = get_or_load_model(model)
+        
+        is_diffusion = MODELS_CONFIG.get(model, {}).get("handler_class") == "DiffusionInpainting"
+        if not is_diffusion:
+            session = get_or_load_model(model)
+        else:
+            session = None
         
         yield json.dumps({"type": "progress", "percentage": 0.3, "message": "Decoding image and mask..."}) + "\n"
         
@@ -80,28 +134,66 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
 
         out_img_np = img_np.copy()
         
-        is_diffusion = MODELS_CONFIG.get(model, {}).get("handler_class") == "DiffusionInpainting"
-
         if bounding_boxes:
-            yield json.dumps({"type": "progress", "percentage": 0.6, "message": f"Running crop-based inpainting on {len(bounding_boxes)} regions..."}) + "\n"
-            
             # Setup SD parameters if Diffusion
             if is_diffusion:
-                prompt = options.get("prompt") or ""
+                prompt_input = options.get("prompt") or ""
                 negative_prompt = options.get("negative_prompt") or "color, colorful, low quality, blurry, bad anatomy"
                 steps = int(options.get("steps") or 25)
                 guidance_scale = float(options.get("guidance_scale") or 7.5)
                 auto_prompt = bool(options.get("auto_prompt") or False)
                 consensus_arbiter = options.get("consensus_arbiter") or "DeepSeek"
                 
-                # If auto-prompt is enabled and prompt is empty, generate it
-                if auto_prompt and not prompt:
-                    yield json.dumps({"type": "progress", "percentage": 0.5, "message": "Generating prompt via VLM..."}) + "\n"
-                    api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
-                    prompt = generate_vlm_prompt(api_base, prompt)
-                    sys.stderr.write(f"[Server Inpaint Service] VLM Auto-Prompt: '{prompt}'\n")
-                elif not prompt:
-                    prompt = "manga reconstruction, detailed background, high quality line art"
+                prompts = []
+                is_local_vlm = auto_prompt and consensus_arbiter in ["olmOCR2_Q4", "olmOCR2_Q6", "olmOCR2_Q8", "PaddleOCR_Manga"]
+                
+                if auto_prompt and not prompt_input:
+                    if is_local_vlm:
+                        yield json.dumps({"type": "progress", "percentage": 0.4, "message": f"Generating prompts using local VLM {consensus_arbiter}..."}) + "\n"
+                        for idx, box in enumerate(bounding_boxes):
+                            xmin, ymin, xmax, ymax = box
+                            side = int(max(xmax - xmin, ymax - ymin) * 1.6)
+                            if side < 256:
+                                side = 256
+                            cx = (xmin + xmax) // 2
+                            cy = (ymin + ymax) // 2
+                            x0 = int(cx - side // 2)
+                            x1 = x0 + side
+                            y0 = int(cy - side // 2)
+                            y1 = y0 + side
+                            
+                            x0_clipped = max(0, x0)
+                            x1_clipped = min(full_w, x1)
+                            y0_clipped = max(0, y0)
+                            y1_clipped = min(full_h, y1)
+                            
+                            crop_w = x1_clipped - x0_clipped
+                            crop_h = y1_clipped - y0_clipped
+                            if crop_w <= 0 or crop_h <= 0:
+                                prompts.append("manga reconstruction, detailed background, high quality line art")
+                                continue
+                            
+                            crop_img = img_np[y0_clipped:y1_clipped, x0_clipped:x1_clipped]
+                            crop_img_pil = Image.fromarray(crop_img).resize((512, 512), Image.Resampling.BILINEAR)
+                            
+                            vlm_prompt = generate_local_vlm_prompt(consensus_arbiter, crop_img_pil)
+                            sys.stderr.write(f"[Server Inpaint Service] VLM Local Auto-Prompt for region {idx}: '{vlm_prompt}'\n")
+                            prompts.append(vlm_prompt)
+                    else:
+                        yield json.dumps({"type": "progress", "percentage": 0.4, "message": "Generating prompt via VLM API..."}) + "\n"
+                        api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
+                        api_prompt = generate_vlm_prompt(api_base, prompt_input)
+                        sys.stderr.write(f"[Server Inpaint Service] VLM API Auto-Prompt: '{api_prompt}'\n")
+                        prompts = [api_prompt] * len(bounding_boxes)
+                else:
+                    general_prompt = prompt_input or "manga reconstruction, detailed background, high quality line art"
+                    prompts = [general_prompt] * len(bounding_boxes)
+                
+                # Now load the diffusion inpainting model
+                yield json.dumps({"type": "progress", "percentage": 0.55, "message": "Loading diffusion inpainting model..."}) + "\n"
+                session = get_or_load_model(model)
+            
+            yield json.dumps({"type": "progress", "percentage": 0.6, "message": f"Running crop-based inpainting on {len(bounding_boxes)} regions..."}) + "\n"
 
             for idx, box in enumerate(bounding_boxes):
                 xmin, ymin, xmax, ymax = box
@@ -145,7 +237,8 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
                     # Create generator for reproducibility
                     generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(42)
                     
-                    # Run SD pipeline
+                    # Run SD pipeline with individual prompt
+                    prompt = prompts[idx] if idx < len(prompts) else "manga reconstruction, detailed background, high quality line art"
                     res_pil = session(
                         prompt=prompt,
                         negative_prompt=negative_prompt,

@@ -65,7 +65,7 @@ def show_inpaint_dialog(procedure, config):
 
     # VLM Arbiter custom dropdown (Choose only between VLM models)
     combo_arbiter = Gtk.ComboBoxText()
-    vlm_models = ["DeepSeek", "olmOCR2_Q4", "olmOCR2_Q6", "olmOCR2_Q8", "PaddleOCR_Manga", "JP_Arbiter_8B"]
+    vlm_models = ["olmOCR2_Q4", "olmOCR2_Q6", "olmOCR2_Q8", "PaddleOCR_Manga"]
     for m in vlm_models:
         combo_arbiter.append_text(m)
 
@@ -179,7 +179,7 @@ def show_inpaint_dialog(procedure, config):
     else:
         combo_model.set_active(0)
 
-    stored_arbiter = config.get_property("consensus-arbiter") or "DeepSeek"
+    stored_arbiter = config.get_property("consensus-arbiter") or "olmOCR2_Q4"
     if stored_arbiter in vlm_models:
         combo_arbiter.set_active(vlm_models.index(stored_arbiter))
     else:
