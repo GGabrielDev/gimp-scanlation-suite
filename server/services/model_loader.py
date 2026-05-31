@@ -1,7 +1,6 @@
 import os
 import sys
 import gc
-import gi
 from server.core.config import MODELS_CONFIG
 
 _loaded_models = {}

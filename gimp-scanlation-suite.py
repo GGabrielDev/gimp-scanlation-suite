@@ -63,7 +63,8 @@ class GimpScanlationSuite(Gimp.PlugIn):
             "gimp-scanlation-detect",
             "gimp-scanlation-ocr",
             "gimp-scanlation-inpaint",
-            "gimp-scanlation-translate"
+            "gimp-scanlation-translate",
+            "gimp-scanlation-curve-typeset"
         ]
 
     # 2. Create procedure instances and configure arguments
@@ -329,6 +330,53 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "Reading _Order Heuristic",
                 "Sort dialogues: Japanese (RTL), Western (LTR), Top-to-Bottom, Creation Order",
                 "Japanese (RTL)",
+                GObject.ParamFlags.READWRITE
+            )
+            return procedure
+
+        elif name == "gimp-scanlation-curve-typeset":
+            procedure = Gimp.ImageProcedure.new(
+                self, name, Gimp.PDBProcType.PLUGIN, self.run_curve_typeset, None
+            )
+            procedure.set_image_types("RGB*, GRAY*")
+            procedure.set_sensitivity_mask(Gimp.ProcedureSensitivityMask.DRAWABLE)
+            procedure.set_menu_label("5. Curve and Stroke Text...")
+            procedure.add_menu_path("<Image>/Filters/Scanlation")
+            
+            procedure.set_documentation(
+                "Create a non-destructive outline and fill for text along a path.",
+                "Fills path with active FG/text color, and outlines it with active BG color on separate layers.",
+                name
+            )
+            procedure.set_attribution("Koharu Contributors", "GPL-3.0", "2026")
+
+            # Arguments
+            procedure.add_int_argument(
+                "stroke-width",
+                "Stroke _Width (px)",
+                "Width of the outline/stroke",
+                1, 50, 4,
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_boolean_argument(
+                "grow-selection",
+                "_Grow Selection Method",
+                "Grow the selection to fill background outline (Method A) instead of direct path stroking (Method B)",
+                True,
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_boolean_argument(
+                "use-text-color",
+                "Use _Text Layer Color",
+                "Attempt to extract the fill color from the text layer's properties instead of active Foreground color",
+                True,
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "path-name",
+                "_Path Name",
+                "The target path name for curving the text",
+                "",
                 GObject.ParamFlags.READWRITE
             )
             return procedure
@@ -695,6 +743,21 @@ class GimpScanlationSuite(Gimp.PlugIn):
 
         from modules.core.translate_runner import run_translate_processing
         return run_translate_processing(procedure, image, bounding_boxes, payload, included_box_indices, config, run_mode)
+
+    def run_curve_typeset(self, procedure, run_mode, image, drawables, config, run_data):
+        """
+        Executes Curved Text Typesetting.
+        """
+        GimpUi.init("gimp-scanlation-curve-typeset")
+
+        if run_mode == Gimp.RunMode.INTERACTIVE:
+            from modules.ui.curve_typeset_dialog import show_curve_typeset_dialog
+            ok = show_curve_typeset_dialog(procedure, config, image)
+            if not ok:
+                return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
+
+        from modules.core.curve_typeset_runner import run_curve_typeset_processing
+        return run_curve_typeset_processing(procedure, image, drawables, config)
 
 if __name__ == "__main__":
     Gimp.main(GimpScanlationSuite.__gtype__, sys.argv)
