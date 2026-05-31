@@ -50,6 +50,54 @@ def clean_and_normalize_text(text, half_to_full=True):
     
     return text
 
+import json
+
+def load_context_cache():
+    cache_path = os.path.expanduser("~/.gimp_scanlation_ocr_context_cache.json")
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            sys.stderr.write(f"[Koharu OCR] Failed to load context cache: {e}\n")
+    return {}
+
+def save_context_cache(cache):
+    cache_path = os.path.expanduser("~/.gimp_scanlation_ocr_context_cache.json")
+    try:
+        if len(cache) > 100:
+            keys_to_remove = list(cache.keys())[:len(cache) - 100]
+            for k in keys_to_remove:
+                del cache[k]
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        sys.stderr.write(f"[Koharu OCR] Failed to save context cache: {e}\n")
+
+def find_cached_hint(cache, image_key, xmin, ymin, xmax, ymax):
+    if image_key not in cache:
+        return ""
+    img_cache = cache[image_key]
+    
+    exact_key = f"{int(xmin)},{int(ymin)},{int(xmax)},{int(ymax)}"
+    if exact_key in img_cache:
+        return img_cache[exact_key]
+        
+    for coord_str, hint in img_cache.items():
+        try:
+            parts = [int(p) for p in coord_str.split(",")]
+            if len(parts) == 4:
+                cx_min, cy_min, cx_max, cy_max = parts
+                if (abs(cx_min - xmin) <= 5 and 
+                    abs(cy_min - ymin) <= 5 and 
+                    abs(cx_max - xmax) <= 5 and 
+                    abs(cy_max - ymax) <= 5):
+                    return hint
+        except Exception:
+            continue
+            
+    return ""
+
 def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, run_mode):
     """
     Executes Japanese Manga OCR processing, including GIMP crops, Remote VLM/Local OCR,
@@ -141,12 +189,30 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
 
     ocr_results = []
 
+    # Load cached context hints
+    cache = load_context_cache()
+    image_key = None
+    try:
+        gfile = image.get_file()
+        if gfile:
+            image_key = gfile.get_uri()
+    except Exception:
+        pass
+    if not image_key:
+        try:
+            image_key = image.get_name()
+        except Exception:
+            image_key = "unknown_image"
+
     # Initialize per-path options
     per_path_options = []
-    for _ in range(len(crops)):
+    for i in range(len(crops)):
+        box = valid_boxes[i]
+        xmin, ymin, xmax, ymax = box
+        cached_hint = find_cached_hint(cache, image_key, xmin, ymin, xmax, ymax)
         per_path_options.append({
             "enable_thinking": enable_thinking,
-            "context_hint": ""
+            "context_hint": cached_hint
         })
 
     if inference_mode == "Remote" and configure_per_path and run_mode == Gimp.RunMode.INTERACTIVE:
@@ -247,6 +313,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
             entry_hint = Gtk.Entry()
             entry_hint.set_placeholder_text("e.g. whispering, sound effect, screaming")
             entry_hint.set_width_chars(30)
+            entry_hint.set_text(per_path_options[idx]["context_hint"])
             
             hint_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
             hint_box.pack_start(entry_hint, True, True, 0)
@@ -260,9 +327,19 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
         desc_dialog.show_all()
         response = desc_dialog.run()
         if response == Gtk.ResponseType.OK:
+            img_cache = cache.setdefault(image_key, {})
             for idx, (chk_row, entry_hint) in enumerate(rows_widgets):
+                hint_text = entry_hint.get_text().strip()
                 per_path_options[idx]["enable_thinking"] = chk_row.get_active()
-                per_path_options[idx]["context_hint"] = entry_hint.get_text().strip()
+                per_path_options[idx]["context_hint"] = hint_text
+                
+                # Save to cache
+                box = valid_boxes[idx]
+                xmin, ymin, xmax, ymax = box
+                box_key = f"{int(xmin)},{int(ymin)},{int(xmax)},{int(ymax)}"
+                img_cache[box_key] = hint_text
+            
+            save_context_cache(cache)
             desc_dialog.destroy()
         else:
             desc_dialog.destroy()
