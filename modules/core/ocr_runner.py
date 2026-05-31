@@ -139,29 +139,46 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
                 pass
 
     # Resolve the best source layer for cropping pixels (skip text/group/system layers)
-    source_layer = active_layer
-    is_text_or_system = False
-    try:
-        if hasattr(Gimp, "TextLayer") and isinstance(active_layer, Gimp.TextLayer):
-            is_text_or_system = True
-        elif active_layer.get_name() in ["OCR Transcriptions", "Translated Text", "Detected Bubbles"]:
-            is_text_or_system = True
-        elif hasattr(active_layer, "get_children") and Gimp.Item.get_children(active_layer) is not None:
-            is_text_or_system = True
-    except Exception:
-        pass
+    def find_base_artwork_layer(img, act_layer):
+        suitable_layers = []
+        
+        def traverse_layers(layers):
+            for layer in layers:
+                if hasattr(layer, "get_children"):
+                    try:
+                        children = Gimp.Item.get_children(layer)
+                        if children:
+                            traverse_layers(children)
+                            continue
+                    except Exception:
+                        pass
+                
+                if hasattr(Gimp, "TextLayer") and isinstance(layer, Gimp.TextLayer):
+                    continue
+                if hasattr(layer, "get_text") and layer.get_text() is not None:
+                    continue
+                    
+                name = layer.get_name()
+                if name.startswith("[Inpaint]") or name in ["OCR Transcriptions", "Translated Text", "Detected Bubbles", "Curved Text"]:
+                    continue
+                    
+                try:
+                    parent = layer.get_parent()
+                    if parent:
+                        pname = parent.get_name()
+                        if any(k in pname for k in ["OCR", "Translate", "Bubble", "Inpaint", "Curved"]):
+                            continue
+                except Exception:
+                    pass
+                    
+                suitable_layers.append(layer)
 
-    if is_text_or_system:
-        for layer in reversed(image.get_layers()):
-            if hasattr(layer, "get_children") and Gimp.Item.get_children(layer) is not None:
-                continue
-            if hasattr(Gimp, "TextLayer") and isinstance(layer, Gimp.TextLayer):
-                continue
-            name = layer.get_name()
-            if name.startswith("[Inpaint]") or name in ["OCR Transcriptions", "Translated Text", "Detected Bubbles"]:
-                continue
-            source_layer = layer
-            break
+        traverse_layers(img.get_layers())
+        if suitable_layers:
+            return suitable_layers[-1]
+        return act_layer
+
+    source_layer = find_base_artwork_layer(image, active_layer)
 
     # Extract pixel crops
     try:
