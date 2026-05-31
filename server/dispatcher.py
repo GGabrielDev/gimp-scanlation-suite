@@ -451,7 +451,7 @@ def dispatch(request: BatchRequest):
     if model == "Ensemble":
         task = "ensemble_ocr"
 
-    if task not in ["ocr", "ensemble_ocr", "inpaint"]:
+    if task not in ["ocr", "ensemble_ocr", "inpaint", "translate"]:
         raise HTTPException(status_code=400, detail=f"Unsupported task_type '{task}'")
 
     if task == "ocr":
@@ -1162,6 +1162,158 @@ def dispatch(request: BatchRequest):
             finally:
                 unload_model(model)
                 
+        return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+    elif task == "translate":
+        if model not in MODELS_CONFIG:
+            raise HTTPException(status_code=400, detail=f"Translation model '{model}' is not registered on the server.")
+
+        def event_generator():
+            try:
+                yield json.dumps({"type": "progress", "percentage": 0.0, "message": "Loading translation model..."}) + "\n"
+                model_cfg = MODELS_CONFIG[model]
+                handler_class = model_cfg.get("handler_class")
+                
+                # Fetch translation options
+                options = request.options or {}
+                src_lang = options.get("source_language") or "Japanese"
+                tgt_lang = options.get("target_language") or "English"
+                global_ctx = options.get("global_context") or ""
+                enable_thinking = options.get("enable_thinking", False)
+                
+                # Payload is a list of dialogue blocks
+                dialogues = request.batch_payload
+                
+                # Construct the prompt
+                system_prompt = (
+                    f"You are a professional manga/comic translation assistant. "
+                    f"Translate the following {src_lang} dialogue blocks into {tgt_lang}. "
+                    "You will receive a list of dialogue blocks in their correct reading order. "
+                    "Each block has an index, a speaker name, and an optional context/hint. "
+                    "Maintain the character relationships, tone, and formatting. "
+                    "Output the translations in a valid JSON format. "
+                    "Do NOT output any markdown tags (like ```json), conversational text, or explanations. "
+                    "Output ONLY the JSON object conforming to this schema:\n"
+                    "{\n"
+                    "  \"translations\": [\n"
+                    "    { \"index\": 1, \"translation\": \"translated text\" },\n"
+                    "    ...\n"
+                    "  ]\n"
+                    "}"
+                )
+                
+                user_prompt = ""
+                if global_ctx:
+                    user_prompt += f"Global Scene Context:\n{global_ctx}\n\n"
+                
+                user_prompt += "Dialogue blocks to translate:\n"
+                for item in dialogues:
+                    idx = item.get("index")
+                    text = item.get("text")
+                    speaker = item.get("speaker")
+                    ctx = item.get("context")
+                    
+                    user_prompt += f"Index: {idx}\n"
+                    if speaker:
+                        user_prompt += f"Speaker: {speaker}\n"
+                    if ctx:
+                        user_prompt += f"Context: {ctx}\n"
+                    user_prompt += f"Source Text: {text}\n\n"
+                
+                yield json.dumps({"type": "progress", "percentage": 0.3, "message": f"Performing translation via {model}..."}) + "\n"
+                
+                # Execute inference
+                if handler_class == "DeepSeekAPI":
+                    import requests
+                    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+                    if not api_key:
+                        raise ValueError("DEEPSEEK_API_KEY environment variable is not set.")
+                    
+                    api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
+                    api_base = api_base.rstrip("/")
+                    url = f"{api_base}/chat/completions"
+
+                    headers = {
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    payload = {
+                        "model": model_cfg.get("model_name", "deepseek-chat"),
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ]
+                    }
+                    if enable_thinking:
+                        payload["thinking"] = {"type": "enabled"}
+                        payload["reasoning_effort"] = "high"
+                    else:
+                        payload["thinking"] = {"type": "disabled"}
+                        payload["temperature"] = 0.2
+                    
+                    response = requests.post(url, json=payload, headers=headers, timeout=60.0)
+                    response.raise_for_status()
+                    res_json = response.json()
+                    
+                    # Log reasoning/thinking steps if returned by DeepSeek
+                    reasoning = res_json["choices"][0]["message"].get("reasoning_content", "")
+                    if reasoning:
+                        sys.stderr.write(f"\n[Server Dispatcher] DeepSeek Translation Reasoning:\n---\n{reasoning}\n---\n")
+
+                    text_final = res_json["choices"][0]["message"]["content"]
+                else:
+                    # Local LLM completion
+                    llm = get_or_load_model(model)
+                    llm.reset()
+                    
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ]
+                    response = llm.create_chat_completion(messages=messages)
+                    text_final = response["choices"][0]["message"]["content"]
+                
+                # Clean up response to get only JSON (some LLMs might wrap in ```json ... ```)
+                text_clean = text_final.strip()
+                if text_clean.startswith("```"):
+                    lines = text_clean.split("\n")
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    text_clean = "\n".join(lines).strip()
+                
+                # Try parsing JSON
+                try:
+                    data = json.loads(text_clean)
+                    translations_list = data.get("translations", [])
+                except Exception as json_err:
+                    sys.stderr.write(f"[Server Dispatcher] Failed to parse translation JSON: {json_err}\nRaw content:\n{text_final}\n")
+                    # Fallback regex parsing
+                    translations_list = []
+                    import re
+                    matches = re.findall(r'"index"\s*:\s*(\d+)\s*,\s*"translation"\s*:\s*"([^"]+)"', text_clean)
+                    for m in matches:
+                        translations_list.append({"index": int(m[0]), "translation": m[1]})
+                
+                # Map translations back to the original payload list
+                results = []
+                trans_dict = {item.get("index"): item.get("translation") for item in translations_list}
+                for item in dialogues:
+                    idx = item.get("index")
+                    results.append(trans_dict.get(idx, ""))
+                
+                yield json.dumps({"type": "progress", "percentage": 1.0, "message": "Done."}) + "\n"
+                yield json.dumps({"type": "result", "results": results}) + "\n"
+            except Exception as e:
+                sys.stderr.write(f"[Server Dispatcher] Translation error: {e}\n")
+                yield json.dumps({"type": "progress", "percentage": 1.0, "message": f"Error: {e}"}) + "\n"
+                yield json.dumps({"type": "result", "results": []}) + "\n"
+            finally:
+                if handler_class != "DeepSeekAPI":
+                    unload_model(model)
+                    
         return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
 if __name__ == "__main__":
