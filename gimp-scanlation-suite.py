@@ -1472,11 +1472,11 @@ class GimpScanlationSuite(Gimp.PlugIn):
         if inference_mode == "Local":
             if inpaint_model == "lama-manga":
                 repo = "mayocream/lama-manga-onnx"
-                filename = "model.onnx"
+                filename = "lama-manga.onnx"
                 local_filename = "lama-manga.onnx"
             elif inpaint_model == "aot-inpainting":
                 repo = "ogkalu/aot-inpainting"
-                filename = "model.onnx"
+                filename = "aot.onnx"
                 local_filename = "aot-inpainting.onnx"
             else:
                 Gimp.message(f"Error: Unknown local model option '{inpaint_model}'")

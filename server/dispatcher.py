@@ -144,7 +144,7 @@ MODELS_CONFIG = {
     },
     "lama-manga": {
         "repo": "mayocream/lama-manga-onnx",
-        "file": "model.onnx",
+        "file": "lama-manga.onnx",
         "projector_repo": None,
         "projector_file": None,
         "local_name": "lama-manga.onnx",
@@ -154,7 +154,7 @@ MODELS_CONFIG = {
     },
     "aot-inpainting": {
         "repo": "ogkalu/aot-inpainting",
-        "file": "model.onnx",
+        "file": "aot.onnx",
         "projector_repo": None,
         "projector_file": None,
         "local_name": "aot-inpainting.onnx",
