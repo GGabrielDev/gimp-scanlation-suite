@@ -54,49 +54,6 @@ except ImportError as e:
     sys.stderr.write(f"[Koharu Suite] Failed to import ocr_engine: {e}\n")
     ocr_engine = None
 
-import numpy as np
-
-
-def clean_and_normalize_text(text, half_to_full=True):
-    """
-    Applies custom normalization rules to clean the recognized OCR text.
-    """
-    if not text:
-        return ""
-    
-    # 1. Strip whitespace
-    text = text.strip()
-    
-    # 2. Convert half-width ASCII to full-width CJK if enabled
-    if half_to_full:
-        chars = []
-        for c in text:
-            code = ord(c)
-            if code == 0x0020:
-                chars.append(chr(0x3000))
-            elif 0x0021 <= code <= 0x007E:
-                chars.append(chr(code + 0xfee0))
-            else:
-                chars.append(c)
-        text = "".join(chars)
-        
-    # 3. Collapse repetitive dots/punctuation
-    import re
-    text = re.sub(r'\.{2,}', '...', text)
-    text = re.sub(r'…+', '...', text)
-    text = re.sub(r'・{2,}', '...', text)
-    
-    # 4. Replace unicode ellipsis with standard dot notation
-    text = text.replace('…', '...')
-    
-    return text
-
-
-# We import additional GI modules for future use (e.g. Gegl for buffer manipulations)
-gi.require_version('Gegl', '0.4')
-from gi.repository import Gegl
-
-
 
 class GimpScanlationSuite(Gimp.PlugIn):
 
