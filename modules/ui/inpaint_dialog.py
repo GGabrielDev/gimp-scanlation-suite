@@ -64,6 +64,7 @@ def show_inpaint_dialog(procedure, config):
     combo_model = Gtk.ComboBoxText()
     combo_model.append_text("lama-manga")
     combo_model.append_text("aot-inpainting")
+    combo_model.append_text("sd-inpainting")
     grid.attach(combo_model, 1, 1, 1, 1)
 
     vbox.pack_start(grid, False, False, 0)
@@ -78,6 +79,8 @@ def show_inpaint_dialog(procedure, config):
     model_val = config.get_property("inpaint-model") or "lama-manga"
     if model_val == "aot-inpainting":
         combo_model.set_active(1)
+    elif model_val == "sd-inpainting":
+        combo_model.set_active(2)
     else:
         combo_model.set_active(0)
 
@@ -94,6 +97,15 @@ def show_inpaint_dialog(procedure, config):
     vbox.show_all()
     
     # Render remaining free-text and slider arguments
-    dialog.fill(["dilation", "api-url"])
+    dialog.fill([
+        "dilation", 
+        "api-url", 
+        "prompt", 
+        "negative-prompt", 
+        "steps", 
+        "guidance-scale", 
+        "auto-prompt", 
+        "consensus-arbiter"
+    ])
     
     return bool(dialog.run())

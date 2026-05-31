@@ -155,5 +155,15 @@ MODELS_CONFIG = {
         "local_projector_name": None,
         "handler_class": "Inpainting",
         "n_ctx": 0
+    },
+    "sd-inpainting": {
+        "repo": "runwayml/stable-diffusion-inpainting",
+        "file": None,
+        "projector_repo": None,
+        "projector_file": None,
+        "local_name": None,
+        "local_projector_name": None,
+        "handler_class": "DiffusionInpainting",
+        "n_ctx": 0
     }
 }

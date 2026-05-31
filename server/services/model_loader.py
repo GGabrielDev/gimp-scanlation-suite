@@ -76,6 +76,45 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         _current_loaded_model_id = model_id
         return session
         
+    # Load Diffusion inpainting model via HuggingFace diffusers
+    if model_id in MODELS_CONFIG and MODELS_CONFIG[model_id].get("handler_class") == "DiffusionInpainting":
+        for other in list(_loaded_models.keys()):
+            if other != model_id:
+                unload_model(other)
+        if model_id in _loaded_models:
+            return _loaded_models[model_id]
+            
+        sys.stderr.write(f"[Server Model Loader] Initializing Diffusion Inpainting model '{model_id}'...\n")
+        try:
+            from diffusers import StableDiffusionInpaintPipeline
+            import torch
+        except ImportError:
+            raise ImportError(
+                "Failed to import 'diffusers' or 'torch'. Please ensure you have installed "
+                "diffusers, transformers, accelerate, and torch in your server environment."
+            )
+            
+        cfg = MODELS_CONFIG[model_id]
+        try:
+            pipe = StableDiffusionInpaintPipeline.from_pretrained(
+                cfg["repo"],
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                safety_checker=None, # Uncensored support: disable safety checker
+                requires_safety_checker=False
+            )
+            if torch.cuda.is_available():
+                pipe = pipe.to("cuda")
+                try:
+                    pipe.enable_attention_slicing()
+                except Exception:
+                    pass
+            _loaded_models[model_id] = pipe
+            _current_loaded_model_id = model_id
+            return pipe
+        except Exception as e:
+            sys.stderr.write(f"[Server Model Loader] Failed to load Diffusion model: {e}\n")
+            raise e
+        
     if model_id not in MODELS_CONFIG:
         raise ValueError(f"Model ID '{model_id}' is not registered in the server config.")
         

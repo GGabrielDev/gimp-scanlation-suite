@@ -260,6 +260,48 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "http://localhost:7890",
                 GObject.ParamFlags.READWRITE
             )
+            procedure.add_string_argument(
+                "prompt",
+                "Diffusion _Prompt",
+                "Prompt for SD Inpainting (blank for auto/general)",
+                "",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "negative-prompt",
+                "Diffusion _Negative Prompt",
+                "Things to avoid in SD Inpainting",
+                "color, colorful, low quality, blurry, bad anatomy",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_int_argument(
+                "steps",
+                "Diffusion _Steps",
+                "Number of denoising steps for SD",
+                1, 100, 25,
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_double_argument(
+                "guidance-scale",
+                "Diffusion _Guidance Scale",
+                "CFG Scale for SD",
+                1.0, 20.0, 7.5,
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_boolean_argument(
+                "auto-prompt",
+                "Auto _Prompt via VLM",
+                "Query the VLM to automatically generate the inpainting prompt",
+                False,
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "consensus-arbiter",
+                "VLM Arbiter",
+                "VLM model used for auto-prompting",
+                "DeepSeek",
+                GObject.ParamFlags.READWRITE
+            )
             return procedure
 
         elif name == "gimp-scanlation-translate":

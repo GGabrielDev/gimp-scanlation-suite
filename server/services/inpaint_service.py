@@ -9,6 +9,42 @@ from PIL import Image
 from server.core.config import MODELS_CONFIG
 from server.services.model_loader import get_or_load_model, unload_model
 
+def generate_vlm_prompt(api_base: str, default_prompt: str) -> str:
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not api_key:
+        return default_prompt or "manga reconstruction, detailed background, high quality line art"
+        
+    try:
+        import requests
+        url = f"{api_base.rstrip('/')}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        user_msg = (
+            "You are an AI assistant that writes prompts for Stable Diffusion inpainting in manga. "
+            "We need to erase a text bubble. Write a short, comma-separated list of prompt keywords "
+            "describing the underlying manga artwork (e.g., screentone, lines, character hair/clothes) "
+            "that should fill the space. Keep it under 20 words. Output ONLY the comma-separated keywords."
+        )
+        payload = {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "user", "content": user_msg}
+            ],
+            "temperature": 0.5,
+            "max_tokens": 50
+        }
+        response = requests.post(url, json=payload, headers=headers, timeout=10.0)
+        response.raise_for_status()
+        res_json = response.json()
+        gpt_prompt = res_json["choices"][0]["message"]["content"].strip()
+        gpt_prompt = gpt_prompt.strip('"\'')
+        return gpt_prompt
+    except Exception as e:
+        sys.stderr.write(f"[Server Inpaint Service] Failed to generate auto-prompt via VLM: {e}\n")
+        return default_prompt or "manga reconstruction, detailed background, high quality line art"
+
 def run_inpaint_generator(model: str, batch_payload: list, options: dict):
     """
     Generator yielding newline-separated JSON progress strings, ending with inpainted base64.
@@ -43,9 +79,30 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
                 bounding_boxes = [(int(x_indices.min()), int(y_indices.min()), int(x_indices.max()), int(y_indices.max()))]
 
         out_img_np = img_np.copy()
+        
+        is_diffusion = MODELS_CONFIG.get(model, {}).get("handler_class") == "DiffusionInpainting"
 
         if bounding_boxes:
             yield json.dumps({"type": "progress", "percentage": 0.6, "message": f"Running crop-based inpainting on {len(bounding_boxes)} regions..."}) + "\n"
+            
+            # Setup SD parameters if Diffusion
+            if is_diffusion:
+                prompt = options.get("prompt") or ""
+                negative_prompt = options.get("negative_prompt") or "color, colorful, low quality, blurry, bad anatomy"
+                steps = int(options.get("steps") or 25)
+                guidance_scale = float(options.get("guidance_scale") or 7.5)
+                auto_prompt = bool(options.get("auto_prompt") or False)
+                consensus_arbiter = options.get("consensus_arbiter") or "DeepSeek"
+                
+                # If auto-prompt is enabled and prompt is empty, generate it
+                if auto_prompt and not prompt:
+                    yield json.dumps({"type": "progress", "percentage": 0.5, "message": "Generating prompt via VLM..."}) + "\n"
+                    api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
+                    prompt = generate_vlm_prompt(api_base, prompt)
+                    sys.stderr.write(f"[Server Inpaint Service] VLM Auto-Prompt: '{prompt}'\n")
+                elif not prompt:
+                    prompt = "manga reconstruction, detailed background, high quality line art"
+
             for idx, box in enumerate(bounding_boxes):
                 xmin, ymin, xmax, ymax = box
                 w = xmax - xmin
@@ -83,40 +140,60 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
                 crop_img_pil = Image.fromarray(crop_img).resize((512, 512), Image.Resampling.BILINEAR)
                 crop_mask_pil = Image.fromarray(crop_mask).resize((512, 512), Image.Resampling.NEAREST)
                 
-                crop_img_512 = np.array(crop_img_pil)
-                crop_mask_512 = np.array(crop_mask_pil)
-                
-                img_feed = crop_img_512.astype(np.float32) / 255.0
-                img_feed = np.transpose(img_feed, (2, 0, 1))
-                img_feed = np.expand_dims(img_feed, axis=0)
-                
-                mask_feed = crop_mask_512.astype(np.float32) / 255.0
-                mask_feed = np.expand_dims(mask_feed, axis=0)
-                mask_feed = np.expand_dims(mask_feed, axis=0)
-                
-                # Zero out the masked region in the input image for correct in-distribution inference
-                img_feed = img_feed * (1.0 - mask_feed)
-                
-                input_names = [i.name for i in session.get_inputs()]
-                feeds = {}
-                for name in input_names:
-                    if "image" in name.lower() or "input" in name.lower():
-                        feeds[name] = img_feed
-                    elif "mask" in name.lower():
-                        feeds[name] = mask_feed
-                if len(feeds) < 2:
-                    feeds = {input_names[0]: img_feed, input_names[1]: mask_feed}
+                if is_diffusion:
+                    import torch
+                    # Create generator for reproducibility
+                    generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(42)
                     
-                outputs = session.run(None, feeds)
-                out_crop = outputs[0]
-                
-                out_crop = np.squeeze(out_crop, axis=0)
-                out_crop = np.transpose(out_crop, (1, 2, 0))
-                out_crop = np.clip(out_crop * 255.0, 0.0, 255.0).astype(np.uint8)
-                
-                # Resize back
-                out_crop_pil = Image.fromarray(out_crop).resize((crop_w, crop_h), Image.Resampling.BILINEAR)
-                out_crop_original = np.array(out_crop_pil)
+                    # Run SD pipeline
+                    res_pil = session(
+                        prompt=prompt,
+                        negative_prompt=negative_prompt,
+                        image=crop_img_pil,
+                        mask_image=crop_mask_pil,
+                        num_inference_steps=steps,
+                        guidance_scale=guidance_scale,
+                        generator=generator
+                    ).images[0]
+                    
+                    # Resize back
+                    out_crop_pil = res_pil.resize((crop_w, crop_h), Image.Resampling.BILINEAR)
+                    out_crop_original = np.array(out_crop_pil)
+                else:
+                    crop_img_512 = np.array(crop_img_pil)
+                    crop_mask_512 = np.array(crop_mask_pil)
+                    
+                    img_feed = crop_img_512.astype(np.float32) / 255.0
+                    img_feed = np.transpose(img_feed, (2, 0, 1))
+                    img_feed = np.expand_dims(img_feed, axis=0)
+                    
+                    mask_feed = crop_mask_512.astype(np.float32) / 255.0
+                    mask_feed = np.expand_dims(mask_feed, axis=0)
+                    mask_feed = np.expand_dims(mask_feed, axis=0)
+                    
+                    # Zero out the masked region in the input image for correct in-distribution inference
+                    img_feed = img_feed * (1.0 - mask_feed)
+                    
+                    input_names = [i.name for i in session.get_inputs()]
+                    feeds = {}
+                    for name in input_names:
+                        if "image" in name.lower() or "input" in name.lower():
+                            feeds[name] = img_feed
+                        elif "mask" in name.lower():
+                            feeds[name] = mask_feed
+                    if len(feeds) < 2:
+                        feeds = {input_names[0]: img_feed, input_names[1]: mask_feed}
+                        
+                    outputs = session.run(None, feeds)
+                    out_crop = outputs[0]
+                    
+                    out_crop = np.squeeze(out_crop, axis=0)
+                    out_crop = np.transpose(out_crop, (1, 2, 0))
+                    out_crop = np.clip(out_crop * 255.0, 0.0, 255.0).astype(np.uint8)
+                    
+                    # Resize back
+                    out_crop_pil = Image.fromarray(out_crop).resize((crop_w, crop_h), Image.Resampling.BILINEAR)
+                    out_crop_original = np.array(out_crop_pil)
                 
                 # Blend using the original crop mask
                 mask_area = (crop_mask > 0)[:, :, np.newaxis]

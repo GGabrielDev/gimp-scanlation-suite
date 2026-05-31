@@ -226,6 +226,9 @@ def run_inpaint_processing(procedure, image, drawables, config):
             repo = "ogkalu/aot-inpainting"
             filename = "aot.onnx"
             local_filename = "aot-inpainting.onnx"
+        elif inpaint_model == "sd-inpainting":
+            Gimp.message("Error: sd-inpainting is only supported in Remote inference mode (running on the server with GPU). Please switch Inference Mode to Remote.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
         else:
             Gimp.message(f"Error: Unknown local model option '{inpaint_model}'")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
@@ -423,7 +426,13 @@ def run_inpaint_processing(procedure, image, drawables, config):
                 progress_cb(0.3, "Offloading to remote dispatcher server...")
                 
                 options = {
-                    "bounding_boxes": bounding_boxes
+                    "bounding_boxes": bounding_boxes,
+                    "prompt": config.get_property("prompt") or "",
+                    "negative_prompt": config.get_property("negative-prompt") or "",
+                    "steps": config.get_property("steps") or 25,
+                    "guidance_scale": config.get_property("guidance-scale") or 7.5,
+                    "auto_prompt": config.get_property("auto-prompt") or False,
+                    "consensus_arbiter": config.get_property("consensus-arbiter") or "DeepSeek"
                 }
                 res_b64_list = remote_client.dispatch_batch(
                     "inpaint",
