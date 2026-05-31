@@ -7,3 +7,4 @@ pillow>=10.0.0
 huggingface_hub==1.16.1
 llama-cpp-python==0.3.23
 manga-ocr==0.1.13
+onnxruntime>=1.16.0
