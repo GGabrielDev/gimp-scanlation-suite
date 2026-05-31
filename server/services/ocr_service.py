@@ -263,7 +263,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                         payload["thinking"] = {"type": "disabled"}
                         payload["temperature"] = 0.2
                     
-                    response = requests.post(url, json=payload, headers=headers, timeout=30.0)
+                    response = requests.post(url, json=payload, headers=headers, timeout=120.0)
                     response.raise_for_status()
                     res_json = response.json()
                     
@@ -563,7 +563,7 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
                         payload["thinking"] = {"type": "disabled"}
                         payload["temperature"] = 0.2
                     
-                    response = requests.post(url, json=payload, headers=headers, timeout=30.0)
+                    response = requests.post(url, json=payload, headers=headers, timeout=120.0)
                     response.raise_for_status()
                     res_json = response.json()
                     
