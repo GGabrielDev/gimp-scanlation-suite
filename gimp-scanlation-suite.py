@@ -419,6 +419,11 @@ class GimpScanlationSuite(Gimp.PlugIn):
             
             if not dialog.run():
                 return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
+                
+            selected_indices = [i for i, chk in enumerate(checkboxes) if chk.get_active()]
+            if not selected_indices:
+                Gimp.message("No regions selected for OCR.")
+                return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
         # Parameters extraction
         detector_model = config.get_property("detector-model")
@@ -541,6 +546,86 @@ class GimpScanlationSuite(Gimp.PlugIn):
         """
         GimpUi.init("gimp-scanlation-ocr")
 
+        # Verification of active layer
+        if not drawables:
+            Gimp.message("Error: No active drawable/layer selected.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+            
+        active_layer = drawables[0]
+
+        # Locate target path layer
+        target_path = None
+        paths = image.get_paths()
+        for p in paths:
+            if p.get_name().startswith("Detected Bubbles"):
+                target_path = p
+                break
+                
+        if not target_path:
+            selected = image.get_selected_paths()
+            if selected:
+                target_path = selected[0]
+                
+        if not target_path and paths:
+            target_path = paths[0]
+            
+        if not target_path:
+            Gimp.message("Error: No paths/vectors found in the image. Please run detection first.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        sys.stderr.write(f"[Koharu OCR] Reading bounding boxes from path: '{target_path.get_name()}'...\n")
+
+        # Retrieve strokes and parse coordinates
+        bounding_boxes = []
+        try:
+            strokes = target_path.get_strokes()
+            for stroke_id in strokes:
+                res = target_path.stroke_get_points(stroke_id)
+                coords = None
+                if isinstance(res, tuple) or isinstance(res, list):
+                    for item in res:
+                        if isinstance(item, list) or isinstance(item, tuple):
+                            if len(item) > 0 and isinstance(item[0], (int, float)):
+                                coords = list(item)
+                                break
+                    if coords is None:
+                        for item in res:
+                            if hasattr(item, "controlpoints"):
+                                coords = list(item.controlpoints)
+                                break
+                            elif hasattr(item, "points"):
+                                coords = list(item.points)
+                                break
+                else:
+                    if hasattr(res, "controlpoints"):
+                        coords = list(res.controlpoints)
+                    elif hasattr(res, "points"):
+                        coords = list(res.points)
+
+                if not coords:
+                    sys.stderr.write(f"[Koharu OCR] Skipping stroke {stroke_id}: no coordinates retrieved.\n")
+                    continue
+
+                x_coords = coords[0::2]
+                y_coords = coords[1::2]
+                if not x_coords or not y_coords:
+                    continue
+                    
+                xmin, xmax = min(x_coords), max(x_coords)
+                ymin, ymax = min(y_coords), max(y_coords)
+                
+                bounding_boxes.append((xmin, ymin, xmax, ymax))
+        except Exception as e:
+            sys.stderr.write(f"[Koharu OCR] Failed to parse paths/strokes: {e}\n")
+            Gimp.message("Failed to extract coordinates from paths.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        if not bounding_boxes:
+            Gimp.message("No valid text bounding boxes found in the selected path.")
+            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+        selected_indices = list(range(len(bounding_boxes)))
+
         if run_mode == Gimp.RunMode.INTERACTIVE:
             dialog = GimpUi.ProcedureDialog.new(procedure, config, "OCR Selected Blocks")
             
@@ -646,6 +731,93 @@ class GimpScanlationSuite(Gimp.PlugIn):
             grid.attach(note_label, 0, 7, 2, 1)
             
             vbox.pack_start(grid, False, False, 0)
+
+            # Regions Checklist Frame
+            regions_frame = Gtk.Frame(label="  Regions to Process (OCR Checklist)  ")
+            regions_frame.set_margin_start(12)
+            regions_frame.set_margin_end(12)
+            regions_frame.set_margin_bottom(12)
+            
+            regions_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            regions_vbox.set_margin_top(8)
+            regions_vbox.set_margin_bottom(8)
+            regions_vbox.set_margin_start(12)
+            regions_vbox.set_margin_end(12)
+            
+            # Select all / Deselect all buttons
+            btn_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            btn_select_all = Gtk.Button(label="Select All")
+            btn_deselect_all = Gtk.Button(label="Deselect All")
+            btn_hbox.pack_start(btn_select_all, False, False, 0)
+            btn_hbox.pack_start(btn_deselect_all, False, False, 0)
+            regions_vbox.pack_start(btn_hbox, False, False, 2)
+            
+            # Scrollable list of regions
+            scroll_regions = Gtk.ScrolledWindow()
+            scroll_regions.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroll_regions.set_size_request(-1, 150)
+            scroll_regions.set_min_content_height(100)
+            
+            listbox_regions = Gtk.ListBox()
+            listbox_regions.set_selection_mode(Gtk.SelectionMode.NONE)
+            
+            checkboxes = []
+            for idx, box in enumerate(bounding_boxes):
+                xmin, ymin, xmax, ymax = box
+                w = int(xmax - xmin)
+                h = int(ymax - ymin)
+                
+                row_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+                row_hbox.set_margin_top(4)
+                row_hbox.set_margin_bottom(4)
+                row_hbox.set_margin_start(6)
+                row_hbox.set_margin_end(6)
+                
+                chk = Gtk.CheckButton(label=f"Region {idx + 1}: {w}x{h} at ({int(xmin)}, {int(ymin)})")
+                chk.set_active(True)
+                row_hbox.pack_start(chk, True, True, 0)
+                checkboxes.append(chk)
+                
+                btn_focus = Gtk.Button(label="🔍 Select")
+                btn_focus.set_tooltip_text("Highlight this region on the GIMP canvas")
+                
+                def on_focus_clicked(btn, b=box):
+                    xmin_b, ymin_b, xmax_b, ymax_b = b
+                    try:
+                        Gimp.Image.select_rectangle(
+                            image,
+                            Gimp.ChannelOps.REPLACE,
+                            float(xmin_b), float(ymin_b),
+                            float(xmax_b - xmin_b), float(ymax_b - ymin_b)
+                        )
+                        Gimp.displays_flush()
+                    except Exception as select_err:
+                        sys.stderr.write(f"[Koharu OCR] Failed to select region: {select_err}\n")
+                
+                btn_focus.connect("clicked", on_focus_clicked)
+                row_hbox.pack_start(btn_focus, False, False, 0)
+                
+                row = Gtk.ListBoxRow()
+                row.add(row_hbox)
+                listbox_regions.add(row)
+                
+            scroll_regions.add(listbox_regions)
+            regions_vbox.pack_start(scroll_regions, True, True, 0)
+            
+            # Select/Deselect All signal handlers
+            def on_select_all_clicked(btn):
+                for chk in checkboxes:
+                    chk.set_active(True)
+            
+            def on_deselect_all_clicked(btn):
+                for chk in checkboxes:
+                    chk.set_active(False)
+                    
+            btn_select_all.connect("clicked", on_select_all_clicked)
+            btn_deselect_all.connect("clicked", on_deselect_all_clicked)
+            
+            regions_frame.add(regions_vbox)
+            vbox.pack_start(regions_frame, False, False, 0)
             
             # Set initial values based on config
             inf_val = config.get_property("inference-mode") or "Local"
@@ -814,6 +986,11 @@ class GimpScanlationSuite(Gimp.PlugIn):
             
             if not dialog.run():
                 return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
+                
+            selected_indices = [i for i, chk in enumerate(checkboxes) if chk.get_active()]
+            if not selected_indices:
+                Gimp.message("No regions selected for OCR.")
+                return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
         # Parameters extraction
         ocr_engine_param = config.get_property("ocr-engine") or "PaddleOCR"
@@ -829,18 +1006,16 @@ class GimpScanlationSuite(Gimp.PlugIn):
         enable_thinking = config.get_property("enable-thinking")
         configure_per_path = config.get_property("configure-per-path")
 
+        # Filter bounding boxes to only selected checklist indices
+        bounding_boxes = [bounding_boxes[i] for i in selected_indices]
+
         if inference_mode == "Local" and (ocr_engine_param == "Ensemble" or ensemble_consensus):
             Gimp.message("Error: Ensemble OCR mode is only supported in Remote mode. Please start the dispatcher server and select Remote mode.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
         sys.stderr.write(f"[Koharu OCR] Running in {inference_mode} mode using '{ocr_engine_param}' (Ensemble consensus={ensemble_consensus})...\n")
 
-        # 1. Verification of active layer and engine imports
-        if not drawables:
-            Gimp.message("Error: No active drawable/layer selected.")
-            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
-            
-        active_layer = drawables[0]
+
 
         if inference_mode == "Local":
             if ocr_engine is None:
@@ -858,76 +1033,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
         while GLib.MainContext.default().iteration(False):
             pass
 
-        # 2. Locate the path layer (Detected Bubbles or fallback)
-        target_path = None
-        paths = image.get_paths()
-        for p in paths:
-            if p.get_name().startswith("Detected Bubbles"):
-                target_path = p
-                break
-                
-        if not target_path:
-            selected = image.get_selected_paths()
-            if selected:
-                target_path = selected[0]
-                
-        if not target_path and paths:
-            target_path = paths[0]
-            
-        if not target_path:
-            Gimp.message("Error: No paths/vectors found in the image. Please run detection first.")
-            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
-        sys.stderr.write(f"[Koharu OCR] Reading bounding boxes from path: '{target_path.get_name()}'...\n")
-
-        # 3. Retrieve strokes and parse coordinates
-        bounding_boxes = []
-        try:
-            strokes = target_path.get_strokes()
-            for stroke_id in strokes:
-                res = target_path.stroke_get_points(stroke_id)
-                coords = None
-                if isinstance(res, tuple) or isinstance(res, list):
-                    for item in res:
-                        if isinstance(item, list) or isinstance(item, tuple):
-                            if len(item) > 0 and isinstance(item[0], (int, float)):
-                                coords = list(item)
-                                break
-                    if coords is None:
-                        for item in res:
-                            if hasattr(item, "controlpoints"):
-                                coords = list(item.controlpoints)
-                                break
-                            elif hasattr(item, "points"):
-                                coords = list(item.points)
-                                break
-                else:
-                    if hasattr(res, "controlpoints"):
-                        coords = list(res.controlpoints)
-                    elif hasattr(res, "points"):
-                        coords = list(res.points)
-
-                if not coords:
-                    sys.stderr.write(f"[Koharu OCR] Skipping stroke {stroke_id}: no coordinates retrieved.\n")
-                    continue
-
-                x_coords = coords[0::2]
-                y_coords = coords[1::2]
-                if not x_coords or not y_coords:
-                    continue
-                    
-                xmin, xmax = min(x_coords), max(x_coords)
-                ymin, ymax = min(y_coords), max(y_coords)
-                
-                bounding_boxes.append((xmin, ymin, xmax, ymax))
-        except Exception as e:
-            sys.stderr.write(f"[Koharu OCR] Failed to parse paths/strokes: {e}\n")
-            Gimp.message("Failed to extract coordinates from paths.")
-            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
-
-        if not bounding_boxes:
-            Gimp.message("No valid text bounding boxes found in the selected path.")
-            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
         # Check local model weights presence if in Local Mode
         if inference_mode == "Local":
