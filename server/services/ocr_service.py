@@ -149,24 +149,25 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
     N = len(batch_payload)
 
     try:
-        for idx, item in enumerate(batch_payload):
-            yield json.dumps({
-                "type": "progress",
-                "percentage": idx / N if N > 0 else 0.0,
-                "message": f"Processing crop {idx+1}/{N}..."
-            }) + "\n"
+        if MODELS_CONFIG.get(model, {}).get("handler_class") == "DeepSeekAPI":
+            # 1. Run local raw OCR on all items sequentially (safest for CPU/GPU)
+            raw_texts = []
+            for idx, item in enumerate(batch_payload):
+                yield json.dumps({
+                    "type": "progress",
+                    "percentage": 0.5 * (idx / N) if N > 0 else 0.0,
+                    "message": f"Extracting raw OCR {idx+1}/{N}..."
+                }) + "\n"
 
-            img_str = item.get("image_data", "") if isinstance(item, dict) else str(item)
-            if not img_str:
-                results.append("")
-                continue
+                img_str = item.get("image_data", "") if isinstance(item, dict) else str(item)
+                if not img_str:
+                    raw_texts.append("")
+                    continue
 
-            if not img_str.startswith("data:"):
-                img_str = f"data:image/png;base64,{img_str}"
+                if not img_str.startswith("data:"):
+                    img_str = f"data:image/png;base64,{img_str}"
 
-            if MODELS_CONFIG.get(model, {}).get("handler_class") == "DeepSeekAPI":
                 try:
-                    # 1. Run Raw OCR on crop
                     header, data = img_str.split(",", 1)
                     pil_img = Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
                     
@@ -191,16 +192,22 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                         text_raw = response["choices"][0]["message"]["content"].strip()
                     
                     sys.stderr.write(f"[Server OCR Service] DeepSeek Pipeline - Raw OCR text: '{text_raw}'\n")
-                    
-                    if not text_raw:
-                        results.append("")
-                        continue
+                    raw_texts.append(text_raw)
+                except Exception as raw_err:
+                    sys.stderr.write(f"[Server OCR Service] Raw OCR failed on crop {idx}: {raw_err}\n")
+                    raw_texts.append("")
 
-                    # 2. Run DeepSeek API Correction
-                    api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
-                    api_base = api_base.rstrip("/")
-                    url = f"{api_base}/chat/completions"
+            # 2. Run DeepSeek API correction concurrently
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
+            api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
+            api_base = api_base.rstrip("/")
+            url = f"{api_base}/chat/completions"
+
+            def call_deepseek_correction(idx, text_raw, item):
+                if not text_raw:
+                    return idx, ""
+                try:
                     lang_name = "日本語" if source_lang.lower() == "japanese" else source_lang
                     enable_thinking_global = options.get("enable_thinking", False)
                     enable_thinking_item = item.get("enable_thinking", enable_thinking_global) if isinstance(item, dict) else enable_thinking_global
@@ -262,11 +269,11 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                     else:
                         payload["thinking"] = {"type": "disabled"}
                         payload["temperature"] = 0.2
-                    
+
                     response = requests.post(url, json=payload, headers=headers, timeout=120.0)
                     response.raise_for_status()
                     res_json = response.json()
-                    
+
                     reasoning = res_json["choices"][0]["message"].get("reasoning_content", "")
                     if reasoning:
                         sys.stderr.write(f"\n[Server OCR Service] DeepSeek Reasoning:\n---\n{reasoning}\n---\n")
@@ -274,12 +281,54 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                     corrected_text = res_json["choices"][0]["message"]["content"].strip()
                     corrected_text = corrected_text.strip().strip('"\'')
                     sys.stderr.write(f"[Server OCR Service] DeepSeek Pipeline - Corrected text: '{corrected_text}'\n")
-                    results.append(corrected_text)
-                    
+                    return idx, corrected_text
                 except Exception as ocr_err:
                     sys.stderr.write(f"[Server OCR Service] Error during DeepSeek OCR pipeline on item {idx}: {ocr_err}\n")
-                    results.append(text_raw if 'text_raw' in locals() else "")
-            else:
+                    return idx, text_raw
+
+            yield json.dumps({
+                "type": "progress",
+                "percentage": 0.5,
+                "message": "Correcting OCR outputs with DeepSeek in parallel..."
+            }) + "\n"
+
+            corrected_results = [None] * N
+            with ThreadPoolExecutor(max_workers=min(10, N)) as executor:
+                futures = []
+                for idx, text_raw in enumerate(raw_texts):
+                    item = batch_payload[idx]
+                    futures.append(executor.submit(call_deepseek_correction, idx, text_raw, item))
+
+                completed = 0
+                for f in as_completed(futures):
+                    idx, res = f.result()
+                    corrected_results[idx] = res
+                    completed += 1
+                    yield json.dumps({
+                        "type": "progress",
+                        "percentage": 0.5 + 0.5 * (completed / N) if N > 0 else 1.0,
+                        "message": f"Correcting OCR outputs with DeepSeek {completed}/{N}..."
+                    }) + "\n"
+
+            results = [r if r is not None else "" for r in corrected_results]
+
+        else:
+            # Run local models sequentially
+            for idx, item in enumerate(batch_payload):
+                yield json.dumps({
+                    "type": "progress",
+                    "percentage": idx / N if N > 0 else 0.0,
+                    "message": f"Processing crop {idx+1}/{N}..."
+                }) + "\n"
+
+                img_str = item.get("image_data", "") if isinstance(item, dict) else str(item)
+                if not img_str:
+                    results.append("")
+                    continue
+
+                if not img_str.startswith("data:"):
+                    img_str = f"data:image/png;base64,{img_str}"
+
                 try:
                     llm.reset()
                 except Exception as r_err:
@@ -475,80 +524,66 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
     try:
         yield json.dumps({
             "type": "progress",
-            "percentage": (2 * N) / (3 * N),
+            "percentage": (2 * N) / (3 * N) if N > 0 else 0.66,
             "message": f"Initializing Arbiter ({arbiter_model_id})..."
         }) + "\n"
         arbiter = get_or_load_model(arbiter_model_id)
-        for idx, img_b64 in enumerate(crops_base64):
-            pct = (2 * N + idx) / (3 * N)
-            yield json.dumps({
-                "type": "progress",
-                "percentage": pct,
-                "message": f"Pass 3/3 (Arbiter VLM): Crop {idx+1}/{N}..."
-            }) + "\n"
+
+        if MODELS_CONFIG.get(arbiter_model_id, {}).get("handler_class") == "DeepSeekAPI":
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+            if not api_key:
+                raise ValueError("DEEPSEEK_API_KEY environment variable is not set.")
             
-            if not img_b64:
-                final_results.append("")
-                continue
-            
-            result_a = results_a[idx]
-            result_b = results_b[idx]
+            api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
+            api_base = api_base.rstrip("/")
+            url = f"{api_base}/chat/completions"
 
-            try:
-                reasoning = ""
-                item = batch_payload[idx] if isinstance(batch_payload[idx], dict) else {}
-                enable_thinking_item = item.get("enable_thinking", enable_thinking)
-                context_hint_item = item.get("context_hint", "")
+            def call_deepseek_arbiter(idx, result_a, result_b, item):
+                try:
+                    enable_thinking_item = item.get("enable_thinking", enable_thinking)
+                    context_hint_item = item.get("context_hint", "")
 
-                if source_lang == "Japanese":
-                    user_prompt = (
-                        f"【専門OCRモデルによる読み取りデータ】\n"
-                        f"- データ A: {result_a}\n"
-                        f"- データ B: {result_b}\n\n"
-                        f"素材タイプ (Material Type): {material_type}\n\n"
-                    )
-                    if context_hint_item:
-                        user_prompt += f"このテキストの追加の文脈情報/ヒント: {context_hint_item}\n\n"
-                    user_prompt += (
-                        f"あなたはOCRエラーを修正する専門家です。提供されたデータを単に比較するのではなく、これらをベースとして使用し、指定された素材タイプの文脈、文法、および一般的なOCRの弱点（文字の欠落や誤読）を考慮して、最も正確なテキストを推論してください。\n\n"
-                        f"以下のステップで推論を行ってください：\n"
-                        f"1. データの統合: 両方のデータを分析し、素材の文脈（例：スラング、擬音語、特殊なフォーマット）に最も適した文字や単語を抽出します。\n"
-                        f"2. エラー修正: 視覚モデルがよく間違う文字（例：「ン」の欠落、濁点・半濁点の誤り、小さな仮名）を論理的に修正します。\n\n"
-                        f"ステップバイステップの推論を <thinking>...</thinking> タグ内に記述し、最終的な修正済み日本語テキストを <transcription>...</transcription> タグ内に記述してください。\n\n"
-                        f"<thinking>\n[あなたの推論]</thinking>\n<transcription>\n[最終的なテキストのみ]</transcription>"
-                    )
-                else:
-                    user_prompt = (
-                        f"[Raw OCR Data]\n"
-                        f"- Data A: {result_a}\n"
-                        f"- Data B: {result_b}\n\n"
-                        f"Material Type: {material_type}\n\n"
-                    )
-                    if context_hint_item:
-                        user_prompt += f"Additional Context Hint for this text: {context_hint_item}\n\n"
-                    user_prompt += (
-                        f"You are an expert OCR correction engine. Do not just pick between Data A and Data B. Use them as a baseline to infer the perfectly accurate transcription based on the specific context of the material type.\n\n"
-                        f"Protocol:\n"
-                        f"1. Synthesis: Analyze both readings to extract the most logical words based on the material's tone and formatting (e.g., comic book block lettering, sound effects).\n"
-                        f"2. Correction: Fix common OCR artifacts, hallucinated characters, and punctuation errors to form a coherent string.\n\n"
-                        f"Write your step-by-step reasoning inside <thinking>...</thinking> tags, and the final corrected transcription inside <transcription>...</transcription> tags.\n\n"
-                        f"<thinking>\n[Your reasoning]</thinking>\n<transcription>\n[Final text only]</transcription>"
-                    )
-
-                if MODELS_CONFIG.get(arbiter_model_id, {}).get("handler_class") == "DeepSeekAPI":
-                    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-                    if not api_key:
-                        raise ValueError("DEEPSEEK_API_KEY environment variable is not set.")
-                    
-                    api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
-                    api_base = api_base.rstrip("/")
-                    url = f"{api_base}/chat/completions"
+                    if source_lang == "Japanese":
+                        user_prompt = (
+                            f"【専門OCRモデルによる読み取りデータ】\n"
+                            f"- データ A: {result_a}\n"
+                            f"- データ B: {result_b}\n\n"
+                            f"素材タイプ (Material Type): {material_type}\n\n"
+                        )
+                        if context_hint_item:
+                            user_prompt += f"このテキストの追加の文脈情報/ヒント: {context_hint_item}\n\n"
+                        user_prompt += (
+                            f"あなたはOCRエラーを修正する専門家です。提供されたデータを単に比較するのではなく、これらをベースとして使用し、指定された素材タイプの文脈、文法、および一般的なOCRの弱点（文字の欠落や誤読）を考慮して、最も正確なテキストを推論してください。\n\n"
+                            f"以下のステップで推論を行ってください：\n"
+                            f"1. データの統合: 両方のデータを分析し、素材の文脈（例：スラング、擬音語、特殊なフォーマット）に最も適した文字や単語を抽出します。\n"
+                            f"2. エラー修正: 視覚モデルがよく間違う文字（例：「ン」の欠落、濁点・半濁点の誤り、小さな仮名）を論理的に修正します。\n\n"
+                            f"ステップバイステップの推論を <thinking>...</thinking> タグ内に記述し、最終的な修正済み日本語テキストを <transcription>...</transcription> タグ内に記述してください。\n\n"
+                            f"<thinking>\n[あなたの推論]</thinking>\n<transcription>\n[最終的なテキストのみ]</transcription>"
+                        )
+                    else:
+                        user_prompt = (
+                            f"[Raw OCR Data]\n"
+                            f"- Data A: {result_a}\n"
+                            f"- Data B: {result_b}\n\n"
+                            f"Material Type: {material_type}\n\n"
+                        )
+                        if context_hint_item:
+                            user_prompt += f"Additional Context Hint for this text: {context_hint_item}\n\n"
+                        user_prompt += (
+                            f"You are an expert OCR correction engine. Do not just pick between Data A and Data B. Use them as a baseline to infer the perfectly accurate transcription based on the specific context of the material type.\n\n"
+                            f"Protocol:\n"
+                            f"1. Synthesis: Analyze both readings to extract the most logical words based on the material's tone and formatting (e.g., comic book block lettering, sound effects).\n"
+                            f"2. Correction: Fix common OCR artifacts, hallucinated characters, and punctuation errors to form a coherent string.\n\n"
+                            f"Write your step-by-step reasoning inside <thinking>...</thinking> tags, and the final corrected transcription inside <transcription>...</transcription> tags.\n\n"
+                            f"<thinking>\n[Your reasoning]</thinking>\n<transcription>\n[Final text only]</transcription>"
+                        )
 
                     headers = {
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json"
                     }
-                    
                     payload = {
                         "model": MODELS_CONFIG.get(arbiter_model_id, {}).get("model_name", "deepseek-chat"),
                         "messages": [
@@ -562,17 +597,123 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
                     else:
                         payload["thinking"] = {"type": "disabled"}
                         payload["temperature"] = 0.2
-                    
+
                     response = requests.post(url, json=payload, headers=headers, timeout=120.0)
                     response.raise_for_status()
                     res_json = response.json()
-                    
-                    reasoning = res_json["choices"][0]["message"].get("reasoning_content", "")
-                    if reasoning:
-                        sys.stderr.write(f"\n[Server OCR Service] DeepSeek Arbiter Reasoning:\n---\n{reasoning}\n---\n")
 
+                    reasoning = res_json["choices"][0]["message"].get("reasoning_content", "")
                     text_final = res_json["choices"][0]["message"]["content"]
-                else:
+                    
+                    thinking, transcription = parse_arbiter_output(text_final)
+                    if enable_thinking_item and reasoning:
+                        thinking = reasoning
+                    
+                    return idx, transcription, thinking
+                except Exception as ex_c:
+                    sys.stderr.write(f"[Server OCR Service] Arbiter consensus error on crop {idx}: {ex_c}\n")
+                    return idx, (result_a or result_b or ""), ""
+
+            yield json.dumps({
+                "type": "progress",
+                "percentage": 2.0 / 3.0,
+                "message": "Running Arbiter consensus with DeepSeek in parallel..."
+            }) + "\n"
+
+            arbiter_results = [None] * N
+            arbiter_thinkings = [None] * N
+            
+            with ThreadPoolExecutor(max_workers=min(10, N)) as executor:
+                futures = []
+                for idx, img_b64 in enumerate(crops_base64):
+                    if not img_b64:
+                        arbiter_results[idx] = ""
+                        arbiter_thinkings[idx] = ""
+                        continue
+                    
+                    result_a = results_a[idx]
+                    result_b = results_b[idx]
+                    item = batch_payload[idx] if isinstance(batch_payload[idx], dict) else {}
+                    futures.append(executor.submit(call_deepseek_arbiter, idx, result_a, result_b, item))
+
+                completed = 0
+                for f in as_completed(futures):
+                    idx, transcription, thinking = f.result()
+                    arbiter_results[idx] = transcription
+                    arbiter_thinkings[idx] = thinking
+                    
+                    if thinking:
+                        sys.stderr.write(f"\n[Server OCR Service] Crop {idx} Thinking:\n---\n{thinking}\n---\n")
+                    sys.stderr.write(f"[Server OCR Service] Ensemble crop {idx} final: '{results_a[idx]}' / '{results_b[idx]}' -> '{transcription}'\n")
+                    
+                    completed += 1
+                    pct = (2 * N + completed) / (3 * N) if N > 0 else 1.0
+                    yield json.dumps({
+                        "type": "progress",
+                        "percentage": pct,
+                        "message": f"DeepSeek Arbiter Consensus {completed}/{N}..."
+                    }) + "\n"
+
+            final_results = [r if r is not None else "" for r in arbiter_results]
+
+        else:
+            # Sequential consensus for local models
+            for idx, img_b64 in enumerate(crops_base64):
+                pct = (2 * N + idx) / (3 * N)
+                yield json.dumps({
+                    "type": "progress",
+                    "percentage": pct,
+                    "message": f"Pass 3/3 (Arbiter VLM): Crop {idx+1}/{N}..."
+                }) + "\n"
+                
+                if not img_b64:
+                    final_results.append("")
+                    continue
+                
+                result_a = results_a[idx]
+                result_b = results_b[idx]
+
+                try:
+                    reasoning = ""
+                    item = batch_payload[idx] if isinstance(batch_payload[idx], dict) else {}
+                    enable_thinking_item = item.get("enable_thinking", enable_thinking)
+                    context_hint_item = item.get("context_hint", "")
+
+                    if source_lang == "Japanese":
+                        user_prompt = (
+                            f"【専門OCRモデルによる読み取りデータ】\n"
+                            f"- データ A: {result_a}\n"
+                            f"- データ B: {result_b}\n\n"
+                            f"素材タイプ (Material Type): {material_type}\n\n"
+                        )
+                        if context_hint_item:
+                            user_prompt += f"このテキストの追加の文脈情報/ヒント: {context_hint_item}\n\n"
+                        user_prompt += (
+                            f"あなたはOCRエラーを修正する専門家です。提供されたデータを単に比較するのではなく、これらをベースとして使用し、指定された素材タイプの文脈、文法、および一般的なOCRの弱点（文字の欠落や誤読）を考慮して、最も正確なテキストを推論してください。\n\n"
+                            f"以下のステップで推論を行ってください：\n"
+                            f"1. データの統合: 両方のデータを分析し、素材の文脈（例：スラング、擬音語、特殊なフォーマット）に最も適した文字や単語を抽出します。\n"
+                            f"2. エラー修正: 視覚モデルがよく間違う文字（例：「ン」の欠落、濁点・半濁点の誤り、小さな仮名）を論理的に修正します。\n\n"
+                            f"ステップバイステップの推論を <thinking>...</thinking> タグ内に記述し、最終的な修正済み日本語テキストを <transcription>...</transcription> タグ内に記述してください。\n\n"
+                            f"<thinking>\n[あなたの推論]</thinking>\n<transcription>\n[最終的なテキストのみ]</transcription>"
+                        )
+                    else:
+                        user_prompt = (
+                            f"[Raw OCR Data]\n"
+                            f"- Data A: {result_a}\n"
+                            f"- Data B: {result_b}\n\n"
+                            f"Material Type: {material_type}\n\n"
+                        )
+                        if context_hint_item:
+                            user_prompt += f"Additional Context Hint for this text: {context_hint_item}\n\n"
+                        user_prompt += (
+                            f"You are an expert OCR correction engine. Do not just pick between Data A and Data B. Use them as a baseline to infer the perfectly accurate transcription based on the specific context of the material type.\n\n"
+                            f"Protocol:\n"
+                            f"1. Synthesis: Analyze both readings to extract the most logical words based on the material's tone and formatting (e.g., comic book block lettering, sound effects).\n"
+                            f"2. Correction: Fix common OCR artifacts, hallucinated characters, and punctuation errors to form a coherent string.\n\n"
+                            f"Write your step-by-step reasoning inside <thinking>...</thinking> tags, and the final corrected transcription inside <transcription>...</transcription> tags.\n\n"
+                            f"<thinking>\n[Your reasoning]</thinking>\n<transcription>\n[Final text only]</transcription>"
+                        )
+
                     arbiter.reset()
                     
                     if MODELS_CONFIG[arbiter_model_id].get("handler_class") == "TextOnly":
@@ -613,21 +754,17 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
                             raise inf_err
 
                     text_final = response["choices"][0]["message"]["content"]
-                
-                thinking, transcription = parse_arbiter_output(text_final)
-                
-                if MODELS_CONFIG.get(arbiter_model_id, {}).get("handler_class") == "DeepSeekAPI" and enable_thinking_item:
-                    if reasoning:
-                        thinking = reasoning
-
-                if thinking:
-                    sys.stderr.write(f"\n[Server OCR Service] Crop {idx} Thinking:\n---\n{thinking}\n---\n")
                     
-                final_results.append(transcription)
-                sys.stderr.write(f"[Server OCR Service] Ensemble crop {idx} final: '{result_a}' / '{result_b}' -> '{transcription}'\n")
-            except Exception as ex_c:
-                sys.stderr.write(f"[Server OCR Service] Arbiter consensus error on crop {idx}: {ex_c}\n")
-                final_results.append(result_a or result_b or "")
+                    thinking, transcription = parse_arbiter_output(text_final)
+                    
+                    if thinking:
+                        sys.stderr.write(f"\n[Server OCR Service] Crop {idx} Thinking:\n---\n{thinking}\n---\n")
+                        
+                    final_results.append(transcription)
+                    sys.stderr.write(f"[Server OCR Service] Ensemble crop {idx} final: '{result_a}' / '{result_b}' -> '{transcription}'\n")
+                except Exception as ex_c:
+                    sys.stderr.write(f"[Server OCR Service] Arbiter consensus error on crop {idx}: {ex_c}\n")
+                    final_results.append(result_a or result_b or "")
             
     finally:
         if arbiter_model_id != "DeepSeek":
