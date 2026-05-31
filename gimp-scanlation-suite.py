@@ -104,7 +104,8 @@ class GimpScanlationSuite(Gimp.PlugIn):
             "gimp-scanlation-detect",
             "gimp-scanlation-ocr",
             "gimp-scanlation-inpaint",
-            "gimp-scanlation-translate"
+            "gimp-scanlation-translate",
+            "gimp-scanlation-typeset"
         ]
 
     # 2. Create procedure instances and configure arguments
@@ -338,13 +339,6 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_string_argument(
-                "font-family",
-                "_Font Family",
-                "Font family to use for rendering translated text",
-                "CC Yada Yada Yada",
-                GObject.ParamFlags.READWRITE
-            )
-            procedure.add_string_argument(
                 "inference-mode",
                 "Inference _Mode",
                 "Execute translation locally or offload to remote server",
@@ -377,6 +371,53 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "Reading _Order Heuristic",
                 "Sort dialogues: Japanese (RTL), Western (LTR), Top-to-Bottom, Creation Order",
                 "Japanese (RTL)",
+                GObject.ParamFlags.READWRITE
+            )
+            return procedure
+
+        elif name == "gimp-scanlation-typeset":
+            procedure = Gimp.ImageProcedure.new(
+                self, name, Gimp.PDBProcType.PLUGIN, self.run_typeset, None
+            )
+            procedure.set_image_types("RGB*, GRAY*")
+            procedure.set_sensitivity_mask(Gimp.ProcedureSensitivityMask.DRAWABLE)
+            procedure.set_menu_label("5. Typeset / Render Dialogue...")
+            procedure.add_menu_path("<Image>/Filters/Scanlation")
+            
+            procedure.set_documentation(
+                "Apply font styling, text-wrapping, and auto-fitting to translated layers.",
+                "Formats text layers in the 'Translated Text' group to fit speech bubbles.",
+                name
+            )
+            procedure.set_attribution("Koharu Contributors", "GPL-3.0", "2026")
+            
+            # Arguments for Typesetting
+            procedure.add_string_argument(
+                "font-family",
+                "_Font Family",
+                "Font family to use for rendering",
+                "CC Yada Yada Yada",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_int_argument(
+                "base-font-size",
+                "_Base Font Size",
+                "Initial font size before auto-scaling",
+                6, 72, 18,
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "alignment",
+                "_Text Alignment",
+                "Justification: Center, Left, Right",
+                "Center",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_boolean_argument(
+                "auto-fit",
+                "_Auto-fit to Bubble",
+                "Automatically wrap and scale font size to fit bubble path",
+                True,
                 GObject.ParamFlags.READWRITE
             )
             return procedure
@@ -2104,18 +2145,10 @@ class GimpScanlationSuite(Gimp.PlugIn):
             chk_thinking.set_active(config.get_property("enable-thinking"))
             grid_settings.attach(chk_thinking, 0, 5, 2, 1)
             
-            # Font Family
-            lbl_font = Gtk.Label(label="Render Font Family:")
-            lbl_font.set_xalign(0.0)
-            grid_settings.attach(lbl_font, 0, 6, 1, 1)
-            entry_font = Gtk.Entry()
-            entry_font.set_text(config.get_property("font-family") or "Sans-serif")
-            grid_settings.attach(entry_font, 1, 6, 1, 1)
-
             # Reading Order Heuristic
             lbl_ro = Gtk.Label(label="Reading Order Heuristic:")
             lbl_ro.set_xalign(0.0)
-            grid_settings.attach(lbl_ro, 0, 7, 1, 1)
+            grid_settings.attach(lbl_ro, 0, 6, 1, 1)
             
             combo_ro = Gtk.ComboBoxText()
             ro_options = ["Japanese (RTL)", "Western (LTR)", "Top-to-Bottom", "Creation Order"]
@@ -2126,12 +2159,12 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 combo_ro.set_active(ro_options.index(stored_ro))
             else:
                 combo_ro.set_active(0)
-            grid_settings.attach(combo_ro, 1, 7, 1, 1)
+            grid_settings.attach(combo_ro, 1, 6, 1, 1)
             
             # Global Context Label
             lbl_global = Gtk.Label(label="Global Scene Context / Style Prompts:")
             lbl_global.set_xalign(0.0)
-            grid_settings.attach(lbl_global, 0, 8, 2, 1)
+            grid_settings.attach(lbl_global, 0, 7, 2, 1)
             
             # Global Context TextView
             scroll_global = Gtk.ScrolledWindow()
@@ -2142,7 +2175,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             buf_global = txt_global.get_buffer()
             buf_global.set_text(config.get_property("global-context") or "")
             scroll_global.add(txt_global)
-            grid_settings.attach(scroll_global, 0, 9, 2, 1)
+            grid_settings.attach(scroll_global, 0, 8, 2, 1)
             
             notebook.append_page(grid_settings, Gtk.Label(label="Settings"))
             
@@ -2396,7 +2429,6 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 api_url = entry_api.get_text().strip()
                 trans_model = combo_model.get_active_text()
                 enable_thinking = chk_thinking.get_active()
-                font_family = entry_font.get_text().strip()
                 reading_order = combo_ro.get_active_text()
                 
                 buf_global_ctx = txt_global.get_buffer()
@@ -2405,7 +2437,6 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 config.set_property("source-lang", src_lang)
                 config.set_property("target-lang", tgt_lang)
                 config.set_property("api-url", api_url)
-                config.set_property("font-family", font_family)
                 config.set_property("inference-mode", inf_mode)
                 config.set_property("translation-model", trans_model)
                 config.set_property("enable-thinking", enable_thinking)
@@ -2451,7 +2482,6 @@ class GimpScanlationSuite(Gimp.PlugIn):
             src_lang = config.get_property("source-lang") or "Japanese"
             tgt_lang = config.get_property("target-lang") or "English"
             api_url = config.get_property("api-url") or "http://localhost:7890"
-            font_family = config.get_property("font-family") or "Sans-serif"
             inf_mode = config.get_property("inference-mode") or "Remote"
             trans_model = config.get_property("translation-model") or "DeepSeek"
             enable_thinking = config.get_property("enable-thinking")
@@ -2511,30 +2541,6 @@ class GimpScanlationSuite(Gimp.PlugIn):
             Gimp.message(f"Translation failed: {trans_err}")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
-        # 7. Typesetting and Rendering
-        font = None
-        try:
-            if hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name"):
-                font = Gimp.Font.get_by_name(font_family)
-                if not font:
-                    font = Gimp.Font.get_by_name("CC Yada Yada Yada")
-                if not font:
-                    font = Gimp.Font.get_by_name("CC Hush Hush")
-                if not font:
-                    font = Gimp.Font.get_by_name("Liberation Serif")
-                if not font:
-                    font = Gimp.Font.get_by_name("Georgia")
-                if not font:
-                    font = Gimp.Font.get_by_name("Serif")
-                if not font:
-                    font = Gimp.Font.get_by_name("Sans-serif")
-        except Exception as font_err:
-            sys.stderr.write(f"[Koharu Translator] Failed to resolve font: {font_err}\n")
-
-        if not font:
-            Gimp.message(f"Error: Font '{font_family}' could not be resolved.")
-            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
-
         # Create new "Translated Text" group layer
         try:
             group_name = "Translated Text"
@@ -2553,52 +2559,33 @@ class GimpScanlationSuite(Gimp.PlugIn):
             sys.stderr.write(f"[Koharu Translator] Failed to create layer group: {group_err}\n")
             group_layer = None
 
-        # Custom wrap and fitting logic
-        def fit_and_wrap_text(text, font_size_init, max_width, max_height):
-            font_size = font_size_init
-            while font_size >= 10:
-                # Estimate average character width (approx 0.52 * font_size)
-                avg_char_width = max(1.0, font_size * 0.52)
-                chars_per_line = max(5, int(max_width / avg_char_width))
-                import textwrap
-                lines = textwrap.wrap(text, width=chars_per_line)
-                
-                # Height estimation: lines * font_size * 1.3
-                total_height = len(lines) * (font_size * 1.3)
-                if total_height <= max_height or font_size == 10:
-                    return "\n".join(lines), font_size
-                font_size -= 2
-            return text, font_size
+        default_font = None
+        try:
+            if hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name"):
+                default_font = Gimp.Font.get_by_name("Sans-serif")
+        except Exception:
+            pass
 
-        # Render translations onto new text layers in GIMP
+        # Render translations onto new text layers in GIMP (raw, unstyled text layers centered in bubbles)
         for i, translation in enumerate(translated_results):
             if not translation.strip():
                 continue
             box_idx = included_box_indices[i]
             box = bounding_boxes[box_idx]
             xmin, ymin, xmax, ymax = box
-            w = max(10, xmax - xmin)
-            h = max(10, ymax - ymin)
             cx = (xmin + xmax) // 2
             cy = (ymin + ymax) // 2
             
-            wrapped_text, font_size = fit_and_wrap_text(translation, 18, w, h)
-            
             try:
-                text_layer = Gimp.TextLayer.new(image, wrapped_text, font, font_size, Gimp.Unit.pixel())
+                text_layer = Gimp.TextLayer.new(image, translation, default_font, 14, Gimp.Unit.pixel())
                 if text_layer:
-                    # Set justification to center
                     text_layer.set_justification(Gimp.TextJustification.CENTER)
-                    
-                    # Insert layer into the group to obtain its extent
                     image.insert_layer(text_layer, group_layer, -1)
                     
-                    # Get actual text layer dimensions
                     rect_t = text_layer.get_buffer().get_extent()
                     tw = rect_t.width
                     th = rect_t.height
                     
-                    # Center align inside the speech bubble
                     tx = cx - tw // 2
                     ty = cy - th // 2
                     
@@ -2607,8 +2594,321 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 sys.stderr.write(f"[Koharu Translator] Failed to render bubble {box_idx+1}: {render_err}\n")
 
         # Display completed GIMP message
-        Gimp.message(f"Translation and Typesetting complete! Rendered {len(translated_results)} dialogue bubbles in the 'Translated Text' layer group.")
+        Gimp.message(f"Translation complete! Saved {len(translated_results)} translated bubbles in 'Translated Text' layer group. Please run '5. Typeset / Render Dialogue...' to format them.")
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+    def run_typeset(self, procedure, run_mode, image, drawables, config, run_data):
+        """
+        Formats and typesets translated dialogue layers dynamically inside speech bubbles.
+        """
+        GimpUi.init("gimp-scanlation-typeset")
+
+        # 1. Locate the 'Translated Text' layer group at root
+        translated_group = None
+        for layer in image.get_layers():
+            if layer.get_name() == "Translated Text":
+                translated_group = layer
+                break
+
+        if not translated_group:
+            Gimp.message("Error: 'Translated Text' layer group not found. Please run translation first.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        # Extract text layers from translated_group
+        translated_texts = []
+        try:
+            children = Gimp.Item.get_children(translated_group)
+            for child in children:
+                if hasattr(child, "get_text"):
+                    success, tx, ty = child.get_offsets()
+                    text_val = child.get_text() or ""
+                    if text_val.strip():
+                        translated_texts.append((child, tx, ty, text_val))
+        except Exception as read_err:
+            sys.stderr.write(f"[Koharu Typesetter] Failed to read Translated Text layers: {read_err}\n")
+            Gimp.message("Failed to read translated text layers.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        if not translated_texts:
+            Gimp.message("No text layers found in 'Translated Text' group to typeset.")
+            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+        # 2. Locate the path layer (Detected Bubbles or fallback)
+        target_path = None
+        paths = image.get_paths()
+        for p in paths:
+            if p.get_name().startswith("Detected Bubbles"):
+                target_path = p
+                break
+                
+        if not target_path:
+            selected = image.get_selected_paths()
+            if selected:
+                target_path = selected[0]
+                
+        if not target_path and paths:
+            target_path = paths[0]
+            
+        if not target_path:
+            Gimp.message("Error: No paths/vectors found in the image. Please run detection first.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        sys.stderr.write(f"[Koharu Typesetter] Reading bounding boxes from path: '{target_path.get_name()}'...\n")
+
+        # 3. Retrieve strokes and parse coordinates to get bounding boxes
+        bounding_boxes = []
+        try:
+            strokes = target_path.get_strokes()
+            for stroke_id in strokes:
+                res = target_path.stroke_get_points(stroke_id)
+                coords = None
+                if isinstance(res, tuple) or isinstance(res, list):
+                    for item in res:
+                        if isinstance(item, list) or isinstance(item, tuple):
+                            if len(item) > 0 and isinstance(item[0], (int, float)):
+                                coords = list(item)
+                                break
+                    if coords is None:
+                        for item in res:
+                            if hasattr(item, "controlpoints"):
+                                coords = list(item.controlpoints)
+                                break
+                            elif hasattr(item, "points"):
+                                coords = list(item.points)
+                                break
+                else:
+                    if hasattr(res, "controlpoints"):
+                        coords = list(res.controlpoints)
+                    elif hasattr(res, "points"):
+                        coords = list(res.points)
+
+                if not coords:
+                    continue
+
+                x_coords = coords[0::2]
+                y_coords = coords[1::2]
+                if not x_coords or not y_coords:
+                    continue
+                    
+                xmin, xmax = min(x_coords), max(x_coords)
+                ymin, ymax = min(y_coords), max(y_coords)
+                
+                bounding_boxes.append((xmin, ymin, xmax, ymax))
+        except Exception as e:
+            sys.stderr.write(f"[Koharu Typesetter] Failed to parse paths/strokes: {e}\n")
+            Gimp.message("Failed to extract coordinates from paths.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        if not bounding_boxes:
+            Gimp.message("No valid bounding boxes found in the selected path.")
+            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+        # 4. Map translated layers to bounding boxes based on proximity
+        mapped_bubbles = []
+        for box in bounding_boxes:
+            xmin, ymin, xmax, ymax = box
+            cx = (xmin + xmax) / 2.0
+            cy = (ymin + ymax) / 2.0
+            
+            matched_child = None
+            matched_text = ""
+            best_dist = 999999.0
+            
+            for child, tx, ty, text in translated_texts:
+                dist = np.sqrt((tx - cx)**2 + (ty - cy)**2)
+                if dist < best_dist and dist < 300.0:
+                    best_dist = dist
+                    matched_child = child
+                    matched_text = text
+                    
+            if matched_child:
+                mapped_bubbles.append((box, matched_child, matched_text))
+
+        # 5. Interactive Typesetting Settings Dialog
+        if run_mode == Gimp.RunMode.INTERACTIVE:
+            dialog = Gtk.Dialog(title="Koharu Typesetting & Formatting", parent=None, flags=0)
+            dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
+            dialog.set_default_size(450, 300)
+            
+            content_area = dialog.get_content_area()
+            
+            # Header Box
+            header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            header_box.set_margin_top(12)
+            header_box.set_margin_bottom(12)
+            header_box.set_margin_start(12)
+            header_box.set_margin_end(12)
+            
+            title_label = Gtk.Label()
+            title_label.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Koharu Typesetter</span>")
+            title_label.set_xalign(0.0)
+            header_box.pack_start(title_label, False, False, 0)
+            
+            desc_label = Gtk.Label()
+            desc_label.set_text("Configure font styling, scaling, and alignment options to format speech bubbles.")
+            desc_label.set_xalign(0.0)
+            header_box.pack_start(desc_label, False, False, 0)
+            content_area.pack_start(header_box, False, False, 0)
+            
+            # Settings Grid
+            grid = Gtk.Grid()
+            grid.set_column_spacing(12)
+            grid.set_row_spacing(12)
+            grid.set_margin_start(12)
+            grid.set_margin_end(12)
+            grid.set_margin_bottom(12)
+            
+            # Font Family
+            lbl_font = Gtk.Label(label="Font Family:")
+            lbl_font.set_xalign(0.0)
+            grid.attach(lbl_font, 0, 0, 1, 1)
+            entry_font = Gtk.Entry()
+            entry_font.set_text(config.get_property("font-family") or "CC Yada Yada Yada")
+            grid.attach(entry_font, 1, 0, 1, 1)
+            
+            # Base Font Size
+            lbl_size = Gtk.Label(label="Base Font Size (px):")
+            lbl_size.set_xalign(0.0)
+            grid.attach(lbl_size, 0, 1, 1, 1)
+            spin_size = Gtk.SpinButton.new_with_range(6.0, 72.0, 1.0)
+            spin_size.set_value(config.get_property("base-font-size") or 18.0)
+            grid.attach(spin_size, 1, 1, 1, 1)
+            
+            # Justification
+            lbl_align = Gtk.Label(label="Text Alignment:")
+            lbl_align.set_xalign(0.0)
+            grid.attach(lbl_align, 0, 2, 1, 1)
+            combo_align = Gtk.ComboBoxText()
+            combo_align.append_text("Center")
+            combo_align.append_text("Left")
+            combo_align.append_text("Right")
+            
+            stored_align = config.get_property("alignment") or "Center"
+            align_options = ["Center", "Left", "Right"]
+            if stored_align in align_options:
+                combo_align.set_active(align_options.index(stored_align))
+            else:
+                combo_align.set_active(0)
+            grid.attach(combo_align, 1, 2, 1, 1)
+            
+            # Auto-fit
+            chk_fit = Gtk.CheckButton(label="Auto-fit text size & wrap to bubbles")
+            chk_fit.set_active(config.get_property("auto-fit") if config.get_property("auto-fit") is not None else True)
+            grid.attach(chk_fit, 0, 3, 2, 1)
+            
+            content_area.pack_start(grid, True, True, 0)
+            
+            dialog.show_all()
+            response = dialog.run()
+            
+            if response == Gtk.ResponseType.OK:
+                font_family = entry_font.get_text().strip()
+                base_font_size = int(spin_size.get_value())
+                alignment = combo_align.get_active_text()
+                auto_fit = chk_fit.get_active()
+                
+                config.set_property("font-family", font_family)
+                config.set_property("base-font-size", base_font_size)
+                config.set_property("alignment", alignment)
+                config.set_property("auto-fit", auto_fit)
+                
+                dialog.destroy()
+            else:
+                dialog.destroy()
+                return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
+        else:
+            font_family = config.get_property("font-family") or "CC Yada Yada Yada"
+            base_font_size = config.get_property("base-font-size") or 18
+            alignment = config.get_property("alignment") or "Center"
+            auto_fit = config.get_property("auto-fit") if config.get_property("auto-fit") is not None else True
+
+        # Resolve justification
+        gimp_justification = Gimp.TextJustification.CENTER
+        if alignment == "Left":
+            gimp_justification = Gimp.TextJustification.LEFT
+        elif alignment == "Right":
+            gimp_justification = Gimp.TextJustification.RIGHT
+
+        # Resolve font
+        font = None
+        try:
+            if hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name"):
+                font = Gimp.Font.get_by_name(font_family)
+                if not font:
+                    font = Gimp.Font.get_by_name("CC Yada Yada Yada")
+                if not font:
+                    font = Gimp.Font.get_by_name("CC Hush Hush")
+                if not font:
+                    font = Gimp.Font.get_by_name("Liberation Serif")
+                if not font:
+                    font = Gimp.Font.get_by_name("Georgia")
+                if not font:
+                    font = Gimp.Font.get_by_name("Serif")
+                if not font:
+                    font = Gimp.Font.get_by_name("Sans-serif")
+        except Exception as font_err:
+            sys.stderr.write(f"[Koharu Typesetter] Failed to resolve font: {font_err}\n")
+
+        if not font:
+            Gimp.message(f"Error: Font '{font_family}' could not be resolved.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        # Fit and wrap text helper
+        def fit_and_wrap_text(text, font_size_init, max_width, max_height, apply_scaling):
+            if not apply_scaling:
+                avg_char_width = max(1.0, font_size_init * 0.52)
+                chars_per_line = max(5, int(max_width / avg_char_width))
+                import textwrap
+                return "\n".join(textwrap.wrap(text, width=chars_per_line)), font_size_init
+
+            font_size = font_size_init
+            while font_size >= 10:
+                avg_char_width = max(1.0, font_size * 0.52)
+                chars_per_line = max(5, int(max_width / avg_char_width))
+                import textwrap
+                lines = textwrap.wrap(text, width=chars_per_line)
+                
+                total_height = len(lines) * (font_size * 1.3)
+                if total_height <= max_height or font_size == 10:
+                    return "\n".join(lines), font_size
+                font_size -= 2
+            return text, font_size
+
+        # Apply typesetting updates to each mapped bubble layer
+        for box, old_layer, text_content in mapped_bubbles:
+            xmin, ymin, xmax, ymax = box
+            w = max(10, xmax - xmin)
+            h = max(10, ymax - ymin)
+            cx = (xmin + xmax) // 2
+            cy = (ymin + ymax) // 2
+            
+            wrapped_text, font_size = fit_and_wrap_text(text_content, base_font_size, w, h, auto_fit)
+            
+            try:
+                # Remove the raw unstyled layer
+                image.remove_layer(old_layer)
+                
+                # Create and insert the styled text layer in GIMP
+                text_layer = Gimp.TextLayer.new(image, wrapped_text, font, font_size, Gimp.Unit.pixel())
+                if text_layer:
+                    text_layer.set_justification(gimp_justification)
+                    image.insert_layer(text_layer, translated_group, -1)
+                    
+                    rect_t = text_layer.get_buffer().get_extent()
+                    tw = rect_t.width
+                    th = rect_t.height
+                    
+                    tx = cx - tw // 2
+                    ty = cy - th // 2
+                    
+                    text_layer.set_offsets(int(tx), int(ty))
+            except Exception as render_err:
+                sys.stderr.write(f"[Koharu Typesetter] Failed to typeset bubble: {render_err}\n")
+
+        Gimp.message(f"Typesetting complete! Styled and aligned {len(mapped_bubbles)} dialogue layers in the 'Translated Text' group.")
+        return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+
 
 
 if __name__ == "__main__":
