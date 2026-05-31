@@ -1823,20 +1823,50 @@ class GimpScanlationSuite(Gimp.PlugIn):
 
         # Retrieve active layer offsets and dimensions
         try:
-            buffer = active_layer.get_buffer()
+            # Find the original background/manga layer for previews
+            preview_layer = active_layer
+            for layer in reversed(image.get_layers()):
+                # Skip group layers
+                if hasattr(layer, "get_children") and Gimp.Item.get_children(layer) is not None:
+                    continue
+                # Skip text layers
+                if hasattr(Gimp, "TextLayer") and isinstance(layer, Gimp.TextLayer):
+                    continue
+                name = layer.get_name()
+                if name.startswith("[Inpaint]") or name in ["OCR Transcriptions", "Translated Text", "Detected Bubbles"]:
+                    continue
+                preview_layer = layer
+                break
+
+            sys.stderr.write(f"[Koharu Translator] Using layer '{preview_layer.get_name()}' for preview cropping.\n")
+
+            buffer = preview_layer.get_buffer()
             rect = buffer.get_extent()
             full_w = rect.width
             full_h = rect.height
-            success, offset_x, offset_y = active_layer.get_offsets()
+            success, offset_x, offset_y = preview_layer.get_offsets()
             if not success:
                 offset_x, offset_y = 0, 0
                 
             raw_data = buffer.get(rect, 1.0, "RGB u8", Gegl.AbyssPolicy.NONE)
             img_np = np.frombuffer(raw_data, dtype=np.uint8).reshape((full_h, full_w, 3))
         except Exception as e:
-            sys.stderr.write(f"[Koharu Translator] Failed to read layer pixels: {e}\n")
-            Gimp.message("Failed to read active layer pixels.")
-            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+            sys.stderr.write(f"[Koharu Translator] Failed to read preview layer pixels: {e}\n")
+            try:
+                buffer = active_layer.get_buffer()
+                rect = buffer.get_extent()
+                full_w = rect.width
+                full_h = rect.height
+                success, offset_x, offset_y = active_layer.get_offsets()
+                if not success:
+                    offset_x, offset_y = 0, 0
+                    
+                raw_data = buffer.get(rect, 1.0, "RGB u8", Gegl.AbyssPolicy.NONE)
+                img_np = np.frombuffer(raw_data, dtype=np.uint8).reshape((full_h, full_w, 3))
+            except Exception as active_err:
+                sys.stderr.write(f"[Koharu Translator] Failed to read active layer fallback pixels: {active_err}\n")
+                Gimp.message("Failed to read active layer pixels.")
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
         # 2. Locate the path layer (Detected Bubbles or fallback)
         target_path = None
