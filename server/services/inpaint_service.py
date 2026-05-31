@@ -45,12 +45,11 @@ def generate_vlm_prompt(api_base: str, default_prompt: str) -> str:
         sys.stderr.write(f"[Server Inpaint Service] Failed to generate auto-prompt via VLM: {e}\n")
         return default_prompt or "manga reconstruction, detailed background, high quality line art"
 
-def generate_local_vlm_prompt(model_id: str, crop_img_pil: Image.Image) -> str:
+def generate_local_vlm_prompt(vlm, crop_img_pil: Image.Image) -> str:
     """
-    Queries a local VLM model with the crop image to generate keywords for Stable Diffusion inpainting.
+    Queries a local VLM model object with the crop image to generate keywords for Stable Diffusion inpainting.
     """
     try:
-        from server.services.model_loader import get_or_load_model, unload_model
         import io
         import base64
         
@@ -60,11 +59,6 @@ def generate_local_vlm_prompt(model_id: str, crop_img_pil: Image.Image) -> str:
         img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         img_url = f"data:image/png;base64,{img_b64}"
         
-        # Load VLM model
-        vlm = get_or_load_model(model_id)
-        if not vlm:
-            return "manga reconstruction, detailed background, high quality line art"
-            
         vlm.reset()
         prompt_text = (
             "Describe the drawing in this manga crop (screentone, lines, background pattern, hair, clothes). "
@@ -100,8 +94,6 @@ def generate_local_vlm_prompt(model_id: str, crop_img_pil: Image.Image) -> str:
     except Exception as e:
         sys.stderr.write(f"[Server Inpaint Service] Local VLM auto-prompt generation failed: {e}\n")
         return "manga reconstruction, detailed background, high quality line art"
-    finally:
-        unload_model(model_id)
 
 def run_inpaint_generator(model: str, batch_payload: list, options: dict):
     """
@@ -159,35 +151,41 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
                 if auto_prompt and not prompt_input:
                     if is_local_vlm:
                         yield json.dumps({"type": "progress", "percentage": 0.4, "message": f"Generating prompts using local VLM {consensus_arbiter}..."}) + "\n"
-                        for idx, box in enumerate(bounding_boxes):
-                            xmin, ymin, xmax, ymax = box
-                            side = int(max(xmax - xmin, ymax - ymin) * 1.6)
-                            if side < 256:
-                                side = 256
-                            cx = (xmin + xmax) // 2
-                            cy = (ymin + ymax) // 2
-                            x0 = int(cx - side // 2)
-                            x1 = x0 + side
-                            y0 = int(cy - side // 2)
-                            y1 = y0 + side
-                            
-                            x0_clipped = max(0, x0)
-                            x1_clipped = min(full_w, x1)
-                            y0_clipped = max(0, y0)
-                            y1_clipped = min(full_h, y1)
-                            
-                            crop_w = x1_clipped - x0_clipped
-                            crop_h = y1_clipped - y0_clipped
-                            if crop_w <= 0 or crop_h <= 0:
-                                prompts.append("manga reconstruction, detailed background, high quality line art")
-                                continue
-                            
-                            crop_img = img_np[y0_clipped:y1_clipped, x0_clipped:x1_clipped]
-                            crop_img_pil = Image.fromarray(crop_img).resize((512, 512), Image.Resampling.BILINEAR)
-                            
-                            vlm_prompt = generate_local_vlm_prompt(consensus_arbiter, crop_img_pil)
-                            sys.stderr.write(f"[Server Inpaint Service] VLM Local Auto-Prompt for region {idx}: '{vlm_prompt}'\n")
-                            prompts.append(vlm_prompt)
+                        from server.services.model_loader import get_or_load_model, unload_model
+                        vlm = get_or_load_model(consensus_arbiter)
+                        if vlm:
+                            for idx, box in enumerate(bounding_boxes):
+                                xmin, ymin, xmax, ymax = box
+                                side = int(max(xmax - xmin, ymax - ymin) * 1.6)
+                                if side < 256:
+                                    side = 256
+                                cx = (xmin + xmax) // 2
+                                cy = (ymin + ymax) // 2
+                                x0 = int(cx - side // 2)
+                                x1 = x0 + side
+                                y0 = int(cy - side // 2)
+                                y1 = y0 + side
+                                
+                                x0_clipped = max(0, x0)
+                                x1_clipped = min(full_w, x1)
+                                y0_clipped = max(0, y0)
+                                y1_clipped = min(full_h, y1)
+                                
+                                crop_w = x1_clipped - x0_clipped
+                                crop_h = y1_clipped - y0_clipped
+                                if crop_w <= 0 or crop_h <= 0:
+                                    prompts.append("manga reconstruction, detailed background, high quality line art")
+                                    continue
+                                
+                                crop_img = img_np[y0_clipped:y1_clipped, x0_clipped:x1_clipped]
+                                crop_img_pil = Image.fromarray(crop_img).resize((512, 512), Image.Resampling.BILINEAR)
+                                
+                                vlm_prompt = generate_local_vlm_prompt(vlm, crop_img_pil)
+                                sys.stderr.write(f"[Server Inpaint Service] VLM Local Auto-Prompt for region {idx}: '{vlm_prompt}'\n")
+                                prompts.append(vlm_prompt)
+                            unload_model(consensus_arbiter)
+                        else:
+                            prompts = ["manga reconstruction, detailed background, high quality line art"] * len(bounding_boxes)
                     else:
                         yield json.dumps({"type": "progress", "percentage": 0.4, "message": "Generating prompt via VLM API..."}) + "\n"
                         api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
