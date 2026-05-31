@@ -35,6 +35,9 @@ from gi.repository import GObject
 from gi.repository import GLib
 gi.require_version('Babl', '0.1')
 from gi.repository import Babl
+gi.require_version('Gegl', '0.4')
+from gi.repository import Gegl
+import numpy as np
 
 try:
     from modules import scouter
