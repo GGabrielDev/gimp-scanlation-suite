@@ -40,6 +40,48 @@ def run_inpaint_processing(procedure, image, drawables, config):
         
     active_layer = drawables[0]
 
+    # Resolve the best source layer for inpainting (skip text/group/system layers)
+    def find_base_artwork_layer(img, act_layer):
+        suitable_layers = []
+        
+        def traverse_layers(layers):
+            for layer in layers:
+                if hasattr(layer, "get_children"):
+                    try:
+                        children = Gimp.Item.get_children(layer)
+                        if children:
+                            traverse_layers(children)
+                            continue
+                    except Exception:
+                        pass
+                
+                if hasattr(Gimp, "TextLayer") and isinstance(layer, Gimp.TextLayer):
+                    continue
+                if hasattr(layer, "get_text") and layer.get_text() is not None:
+                    continue
+                    
+                name = layer.get_name()
+                if name.startswith("[Inpaint]") or name in ["OCR Transcriptions", "Translated Text", "Detected Bubbles", "Curved Text"]:
+                    continue
+                    
+                try:
+                    parent = layer.get_parent()
+                    if parent:
+                        pname = parent.get_name()
+                        if any(k in pname for k in ["OCR", "Translate", "Bubble", "Inpaint", "Curved"]):
+                            continue
+                except Exception:
+                    pass
+                    
+                suitable_layers.append(layer)
+
+        traverse_layers(img.get_layers())
+        if suitable_layers:
+            return suitable_layers[-1]
+        return act_layer
+
+    active_layer = find_base_artwork_layer(image, active_layer)
+
     # Check local import requirements
     if inference_mode == "Local":
         if model_manager is None:
