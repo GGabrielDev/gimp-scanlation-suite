@@ -482,22 +482,23 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
 
     # Create GIMP text layers for the recognized text blocks
     try:
-        # Look for an existing "OCR Transcriptions" layer group and delete it to prevent overlays
         group_name = "OCR Transcriptions"
+        group_layer = None
         for layer in image.get_layers():
             if layer.get_name() == group_name:
-                image.remove_layer(layer)
+                group_layer = layer
                 break
 
-        # Create new Layer Group
-        if hasattr(Gimp, "GroupLayer"):
-            group_layer = Gimp.GroupLayer.new(image)
-            group_layer.set_name(group_name)
-            image.insert_layer(group_layer, None, -1)
-        else:
-            group_layer = None
+        if not group_layer:
+            # Create new Layer Group
+            if hasattr(Gimp, "GroupLayer"):
+                group_layer = Gimp.GroupLayer.new(image)
+                group_layer.set_name(group_name)
+                image.insert_layer(group_layer, None, -1)
+            else:
+                group_layer = None
     except Exception as group_err:
-        sys.stderr.write(f"[Koharu OCR] Failed to create layer group: {group_err}\n")
+        sys.stderr.write(f"[Koharu OCR] Failed to resolve/create layer group: {group_err}\n")
         group_layer = None
 
     # Resolve a valid Gimp.Font object
@@ -520,6 +521,17 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
         sys.stderr.write(f"[Koharu OCR] Failed to resolve font: {font_err}\n")
 
     # Insert text layers for each recognized box
+    existing_children = []
+    if group_layer:
+        try:
+            existing_children = Gimp.Item.get_children(group_layer)
+            if existing_children is None:
+                existing_children = []
+            else:
+                existing_children = list(existing_children)
+        except Exception as e:
+            sys.stderr.write(f"[Koharu OCR] Failed to get children of group layer: {e}\n")
+
     for i, text in enumerate(ocr_results):
         if not text.strip():
             continue
@@ -527,6 +539,18 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
         xmin, ymin, xmax, ymax = box
         
         try:
+            # Check for and remove duplicate child layer at similar offsets
+            for child in list(existing_children):
+                success, tx, ty = child.get_offsets()
+                if success:
+                    if abs(tx - xmin) <= 5 and abs(ty - ymin) <= 5:
+                        try:
+                            sys.stderr.write(f"[Koharu OCR] Overwriting old text layer: '{child.get_name()}' at ({tx}, {ty})\n")
+                            image.remove_layer(child)
+                            existing_children.remove(child)
+                        except Exception as rm_err:
+                            sys.stderr.write(f"[Koharu OCR] Failed to remove duplicate child layer: {rm_err}\n")
+
             if font:
                 text_layer = Gimp.TextLayer.new(image, text, font, 32, Gimp.Unit.pixel())
             else:
