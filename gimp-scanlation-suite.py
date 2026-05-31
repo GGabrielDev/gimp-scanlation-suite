@@ -2804,10 +2804,15 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "alignment": "Center", "letter_spacing": 0.0, "line_spacing": 0.0,
                 "color_hex": "#555555", "direction": "Horizontal", "auto_fit": True,
             },
-            "SFX / Onomatopoeia": {
+            "SFX Vertical": {
                 "font_family": "CC Hush Hush", "font_size": 28,
                 "alignment": "Center", "letter_spacing": 4.0, "line_spacing": -4.0,
                 "color_hex": "#000000", "direction": "Vertical Stack", "auto_fit": False,
+            },
+            "SFX Horizontal": {
+                "font_family": "CC Hush Hush", "font_size": 28,
+                "alignment": "Center", "letter_spacing": 2.0, "line_spacing": 0.0,
+                "color_hex": "#000000", "direction": "Horizontal", "auto_fit": True,
             },
         }
 
@@ -3032,10 +3037,10 @@ class GimpScanlationSuite(Gimp.PlugIn):
         spin_line.set_value(0.0)
         grid_props.attach(spin_line, 1, 3, 1, 1)
 
-        # Text Color
+        # Text Color + Eyedropper
         grid_props.attach(Gtk.Label(label="Text Color:"), 0, 4, 1, 1)
+        color_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         color_btn = Gtk.ColorButton()
-        rgba_default = Gdk.RGBA() if 'Gdk' in dir() else None
         try:
             from gi.repository import Gdk
             rgba_default = Gdk.RGBA()
@@ -3043,7 +3048,36 @@ class GimpScanlationSuite(Gimp.PlugIn):
             color_btn.set_rgba(rgba_default)
         except Exception:
             pass
-        grid_props.attach(color_btn, 1, 4, 1, 1)
+        color_hbox.pack_start(color_btn, True, True, 0)
+
+        btn_eyedropper = Gtk.Button(label="🎨 Pick from Canvas")
+        btn_eyedropper.set_tooltip_text(
+            "Use GIMP's Color Picker tool (eyedropper) on the canvas first,\n"
+            "then click this button to grab the foreground color.")
+        def on_eyedropper_clicked(btn):
+            try:
+                fg_color = Gimp.context_get_foreground()
+                if fg_color:
+                    # Gegl.Color -> RGBA floats
+                    r = g = b = 0.0
+                    if hasattr(fg_color, 'get_rgba'):
+                        r, g, b, _a = fg_color.get_rgba()
+                    elif hasattr(fg_color, 'get_components'):
+                        comps = fg_color.get_components()
+                        if len(comps) >= 3:
+                            r, g, b = comps[0], comps[1], comps[2]
+                    from gi.repository import Gdk
+                    rgba = Gdk.RGBA()
+                    rgba.red = r
+                    rgba.green = g
+                    rgba.blue = b
+                    rgba.alpha = 1.0
+                    color_btn.set_rgba(rgba)
+            except Exception as pick_err:
+                sys.stderr.write(f"[Koharu Typesetter] Eyedropper pick failed: {pick_err}\n")
+        btn_eyedropper.connect("clicked", on_eyedropper_clicked)
+        color_hbox.pack_start(btn_eyedropper, False, False, 0)
+        grid_props.attach(color_hbox, 1, 4, 1, 1)
 
         # Auto-fit
         chk_autofit = Gtk.CheckButton(label="Auto-fit text to bubble")
