@@ -697,7 +697,7 @@ def dispatch(request: BatchRequest):
 
         return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
-    else:
+    elif task == "ensemble_ocr":
         # ensemble_ocr Mixture of Experts pipeline
         options = request.options or {}
         source_lang = options.get("source_language") or "Japanese"
