@@ -122,5 +122,27 @@ To wrap text along curved speech bubbles or dynamic sound waves:
 ### Step 4: Fill the Curved Path
 1. Go to the **Paths** tab (docked next to the Layers tab, or open it via `Windows > Dockable Dialogs > Paths`).
 2. Right-click the newly generated text path (named `[Text Layer Name]`) and select **Path to Selection**.
-3. Create a **New Layer** named `Curved Text Render`.
-4. Set your foreground color, select the **Bucket Fill Tool** (`Shift + B`), and click inside the selection to fill the curved letters.
+3. Create a **New Layer** named `Curved Text Fill`.
+4. Set your text color as the active foreground color, select the **Bucket Fill Tool** (`Shift + B`), and click inside the selection (or press `Ctrl + ,`) to fill the letters.
+
+### Step 5: Add Outline / Stroke to the Curved Text
+There are two ways to outline curved text depending on the look you want:
+
+#### Method A: Stroking via Selection (Thick Comic Outlines - Recommended)
+This matches standard dialogue text outlining:
+1. With the selection from **Step 4** still active (or right-click the text path in the **Paths** tab and select **Path to Selection**), go to the menu: **Select > Grow...**
+2. Enter the outline thickness (e.g., `3` to `5` pixels) and click OK.
+3. Create a **New Layer** named `Curved Text Outline` and position it **below** the `Curved Text Fill` layer.
+4. Set your foreground color to White (or your desired outline color).
+5. Select the **Bucket Fill Tool** (`Shift + B`) and fill the selection on the `Curved Text Outline` layer.
+
+#### Method B: Direct Path Stroking (Thin Border Line / Hollow Style)
+This draws a crisp border line directly centered on the path outline of the characters:
+1. Create a **New Layer** named `Curved Text Outline` and position it **below** (or above) the `Curved Text Fill` layer.
+2. Set your foreground color to the outline color.
+3. In the **Paths** tab, right-click the text path and select **Stroke Path...** (or click the Stroke icon at the bottom of the panel).
+4. In the dialog:
+   * Select **Stroke line** -> **Solid color**.
+   * Set the **Line width** (e.g., `2px` or `4px`).
+   * Click **Stroke**.
+
