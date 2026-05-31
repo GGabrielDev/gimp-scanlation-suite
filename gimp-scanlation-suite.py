@@ -1560,54 +1560,91 @@ class GimpScanlationSuite(Gimp.PlugIn):
                     model_path = model_manager.ensure_model_exists(repo, filename, local_filename=local_filename)
                     session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
                     
-                    progress_cb(0.4, "Preparing symmetric padding & feeds...")
-                    # Padding to multiples of 256
-                    pad_factor = 256
-                    h_pad = (pad_factor - (full_h % pad_factor)) % pad_factor
-                    w_pad = (pad_factor - (full_w % pad_factor)) % pad_factor
+                    progress_cb(0.4, "Running crop-based local inpainting...")
                     
-                    pad_h_top = h_pad // 2
-                    pad_h_bottom = h_pad - pad_h_top
-                    pad_w_left = w_pad // 2
-                    pad_w_right = w_pad - pad_w_left
+                    # Work on a copy of the original image pixels
+                    out_img_np = img_np.copy()
                     
-                    padded_img = np.pad(img_np, ((pad_h_top, pad_h_bottom), (pad_w_left, pad_w_right), (0, 0)), mode="symmetric")
-                    padded_mask = np.pad(mask_np, ((pad_h_top, pad_h_bottom), (pad_w_left, pad_w_right)), mode="constant", constant_values=0)
-                    
-                    img_feed = padded_img.astype(np.float32) / 255.0
-                    img_feed = np.transpose(img_feed, (2, 0, 1))
-                    img_feed = np.expand_dims(img_feed, axis=0)
-                    
-                    mask_feed = padded_mask.astype(np.float32) / 255.0
-                    mask_feed = np.expand_dims(mask_feed, axis=0)
-                    mask_feed = np.expand_dims(mask_feed, axis=0)
-                    
-                    progress_cb(0.6, "Running local inpainting session...")
-                    
-                    input_names = [i.name for i in session.get_inputs()]
-                    feeds = {}
-                    for name in input_names:
-                        if "image" in name.lower() or "input" in name.lower():
-                            feeds[name] = img_feed
-                        elif "mask" in name.lower():
-                            feeds[name] = mask_feed
-                    if len(feeds) < 2:
-                        feeds = {input_names[0]: img_feed, input_names[1]: mask_feed}
+                    for idx, box in enumerate(bounding_boxes):
+                        xmin, ymin, xmax, ymax = box
+                        w = xmax - xmin
+                        h = ymax - ymin
+                        if w <= 0 or h <= 0:
+                            continue
+                            
+                        # Centered square with a margin of 1.6x max dimension
+                        side = int(max(w, h) * 1.6)
+                        if side < 256:
+                            side = 256
                         
-                    outputs = session.run(None, feeds)
-                    out_img = outputs[0]
+                        cx = (xmin + xmax) // 2
+                        cy = (ymin + ymax) // 2
+                        
+                        x0 = int(cx - side // 2)
+                        x1 = x0 + side
+                        y0 = int(cy - side // 2)
+                        y1 = y0 + side
+                        
+                        x0_clipped = max(0, x0)
+                        x1_clipped = min(full_w, x1)
+                        y0_clipped = max(0, y0)
+                        y1_clipped = min(full_h, y1)
+                        
+                        crop_w = x1_clipped - x0_clipped
+                        crop_h = y1_clipped - y0_clipped
+                        if crop_w <= 0 or crop_h <= 0:
+                            continue
+                            
+                        crop_img = img_np[y0_clipped:y1_clipped, x0_clipped:x1_clipped]
+                        crop_mask = mask_np[y0_clipped:y1_clipped, x0_clipped:x1_clipped]
+                        
+                        # Resize to 512x512
+                        crop_img_pil = Image.fromarray(crop_img).resize((512, 512), Image.Resampling.BILINEAR)
+                        crop_mask_pil = Image.fromarray(crop_mask).resize((512, 512), Image.Resampling.NEAREST)
+                        
+                        crop_img_512 = np.array(crop_img_pil)
+                        crop_mask_512 = np.array(crop_mask_pil)
+                        
+                        img_feed = crop_img_512.astype(np.float32) / 255.0
+                        img_feed = np.transpose(img_feed, (2, 0, 1))
+                        img_feed = np.expand_dims(img_feed, axis=0)
+                        
+                        mask_feed = crop_mask_512.astype(np.float32) / 255.0
+                        mask_feed = np.expand_dims(mask_feed, axis=0)
+                        mask_feed = np.expand_dims(mask_feed, axis=0)
+                        
+                        input_names = [i.name for i in session.get_inputs()]
+                        feeds = {}
+                        for name in input_names:
+                            if "image" in name.lower() or "input" in name.lower():
+                                feeds[name] = img_feed
+                            elif "mask" in name.lower():
+                                feeds[name] = mask_feed
+                        if len(feeds) < 2:
+                            feeds = {input_names[0]: img_feed, input_names[1]: mask_feed}
+                            
+                        outputs = session.run(None, feeds)
+                        out_crop = outputs[0]
+                        
+                        out_crop = np.squeeze(out_crop, axis=0)
+                        out_crop = np.transpose(out_crop, (1, 2, 0))
+                        out_crop = np.clip(out_crop * 255.0, 0.0, 255.0).astype(np.uint8)
+                        
+                        # Resize back
+                        out_crop_pil = Image.fromarray(out_crop).resize((crop_w, crop_h), Image.Resampling.BILINEAR)
+                        out_crop_original = np.array(out_crop_pil)
+                        
+                        # Blend using the original crop mask
+                        mask_area = (crop_mask > 0)[:, :, np.newaxis]
+                        out_img_np[y0_clipped:y1_clipped, x0_clipped:x1_clipped] = np.where(
+                            mask_area,
+                            out_crop_original,
+                            out_img_np[y0_clipped:y1_clipped, x0_clipped:x1_clipped]
+                        )
+                        
+                        progress_cb(0.4 + 0.5 * (idx + 1) / len(bounding_boxes), f"Processed region {idx+1}/{len(bounding_boxes)}...")
                     
-                    out_img = np.squeeze(out_img, axis=0)
-                    out_img = np.transpose(out_img, (1, 2, 0))
-                    
-                    h_start = pad_h_top
-                    h_end = pad_h_top + full_h
-                    w_start = pad_w_left
-                    w_end = pad_w_left + full_w
-                    cropped_out = out_img[h_start:h_end, w_start:w_end, :]
-                    
-                    final_img_np = np.clip(cropped_out * 255.0, 0.0, 255.0).astype(np.uint8)
-                    result_container.append(final_img_np)
+                    result_container.append(out_img_np)
                     progress_cb(1.0, "Done.")
                 except Exception as ex:
                     error_container.append(ex)
@@ -1629,11 +1666,15 @@ class GimpScanlationSuite(Gimp.PlugIn):
                     
                     progress_cb(0.3, "Offloading to remote dispatcher server...")
                     
+                    options = {
+                        "bounding_boxes": bounding_boxes
+                    }
                     res_b64_list = remote_client.dispatch_batch(
                         "inpaint",
                         inpaint_model,
                         [img_b64, mask_b64],
                         api_url,
+                        options=options,
                         progress_callback=progress_cb
                     )
                     
@@ -1684,17 +1725,8 @@ class GimpScanlationSuite(Gimp.PlugIn):
             Gimp.message("Failed to create inpainting layer copy.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
-        # Write output pixels into copy_layer
-        try:
-            copy_buffer = copy_layer.get_buffer()
-            copy_rect = copy_buffer.get_extent()
-            copy_buffer.set(copy_rect, "RGB u8", final_img.tobytes())
-        except Exception as write_err:
-            sys.stderr.write(f"[Koharu Inpaint] Failed to write inpainted buffer: {write_err}\n")
-            Gimp.message("Failed to write inpainted pixels to the copied layer.")
-            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
-
-        # Insert layer exactly above active layer
+        # Insert layer exactly above active layer FIRST.
+        # In GIMP 3, the layer must be attached to the image hierarchy before writing to its buffer.
         try:
             parent = active_layer.get_parent()
             siblings = parent.get_children() if parent else image.get_layers()
@@ -1710,6 +1742,16 @@ class GimpScanlationSuite(Gimp.PlugIn):
             except Exception:
                 Gimp.message("Failed to insert the inpainted layer into image.")
                 return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        # Now that the layer is attached to the image, write the output pixels into its buffer
+        try:
+            copy_buffer = copy_layer.get_buffer()
+            copy_rect = copy_buffer.get_extent()
+            copy_buffer.set(copy_rect, "RGB u8", final_img.tobytes())
+        except Exception as write_err:
+            sys.stderr.write(f"[Koharu Inpaint] Failed to write inpainted buffer: {write_err}\n")
+            Gimp.message("Failed to write inpainted pixels to the copied layer.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
         # Activate the new layer
         try:
