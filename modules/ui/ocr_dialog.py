@@ -413,4 +413,6 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
         return None
 
     selected_indices = [i for i, chk in enumerate(checkboxes) if chk.get_active()]
+    sys.stderr.write(f"[Koharu OCR] Dialog closed. Checkbox states: {[chk.get_active() for chk in checkboxes]}\n")
+    sys.stderr.write(f"[Koharu OCR] Selected indices returned: {selected_indices}\n")
     return selected_indices

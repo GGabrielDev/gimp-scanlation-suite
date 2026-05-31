@@ -138,14 +138,39 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
             while GLib.MainContext.default().iteration(False):
                 pass
 
+    # Resolve the best source layer for cropping pixels (skip text/group/system layers)
+    source_layer = active_layer
+    is_text_or_system = False
+    try:
+        if hasattr(Gimp, "TextLayer") and isinstance(active_layer, Gimp.TextLayer):
+            is_text_or_system = True
+        elif active_layer.get_name() in ["OCR Transcriptions", "Translated Text", "Detected Bubbles"]:
+            is_text_or_system = True
+        elif hasattr(active_layer, "get_children") and Gimp.Item.get_children(active_layer) is not None:
+            is_text_or_system = True
+    except Exception:
+        pass
+
+    if is_text_or_system:
+        for layer in reversed(image.get_layers()):
+            if hasattr(layer, "get_children") and Gimp.Item.get_children(layer) is not None:
+                continue
+            if hasattr(Gimp, "TextLayer") and isinstance(layer, Gimp.TextLayer):
+                continue
+            name = layer.get_name()
+            if name.startswith("[Inpaint]") or name in ["OCR Transcriptions", "Translated Text", "Detected Bubbles"]:
+                continue
+            source_layer = layer
+            break
+
     # Extract pixel crops
     try:
-        buffer = active_layer.get_buffer()
+        buffer = source_layer.get_buffer()
         rect = buffer.get_extent()
         full_w = rect.width
         full_h = rect.height
 
-        success, offset_x, offset_y = active_layer.get_offsets()
+        success, offset_x, offset_y = source_layer.get_offsets()
         if not success:
             offset_x, offset_y = 0, 0
 
@@ -165,6 +190,8 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
     while GLib.MainContext.default().iteration(False):
         pass
 
+    sys.stderr.write(f"[Koharu OCR] run_ocr_processing called with {len(bounding_boxes)} bounding boxes.\n")
+
     # Crop all regions
     crops = []
     valid_boxes = []
@@ -177,7 +204,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
         y1 = int(np.clip(ymax - offset_y, 0, full_h))
 
         if x1 <= x0 or y1 <= y0:
-            sys.stderr.write(f"[Koharu OCR] Box {i} has empty intersection with layer: {box}\n")
+            sys.stderr.write(f"[Koharu OCR] Box {i} ({box}) skipped: empty intersection (x0={x0}, x1={x1}, y0={y0}, y1={y1}, full_w={full_w}, full_h={full_h}, offset_x={offset_x}, offset_y={offset_y})\n")
             continue
 
         crops.append(img_np[y0:y1, x0:x1, :])
