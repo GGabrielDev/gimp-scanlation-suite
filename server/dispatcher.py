@@ -141,6 +141,26 @@ MODELS_CONFIG = {
         "handler_class": "DeepSeekAPI",
         "n_ctx": 4096,
         "model_name": "deepseek-v4-pro"
+    },
+    "lama-manga": {
+        "repo": "mayocream/lama-manga-onnx",
+        "file": "model.onnx",
+        "projector_repo": None,
+        "projector_file": None,
+        "local_name": "lama-manga.onnx",
+        "local_projector_name": None,
+        "handler_class": "Inpainting",
+        "n_ctx": 0
+    },
+    "aot-inpainting": {
+        "repo": "anyisalin/aot-inpainting-onnx",
+        "file": "model.onnx",
+        "projector_repo": None,
+        "projector_file": None,
+        "local_name": "aot-inpainting.onnx",
+        "local_projector_name": None,
+        "handler_class": "Inpainting",
+        "n_ctx": 0
     }
 }
 
@@ -197,6 +217,26 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         for other in list(_loaded_models.keys()):
             unload_model(other)
         return None
+
+    # Load inpainting model via ONNX runtime
+    if model_id in MODELS_CONFIG and MODELS_CONFIG[model_id].get("handler_class") == "Inpainting":
+        for other in list(_loaded_models.keys()):
+            if other != model_id:
+                unload_model(other)
+        if model_id in _loaded_models:
+            return _loaded_models[model_id]
+        
+        sys.stderr.write(f"[Server Dispatcher] Initializing ONNX inpainting model '{model_id}'...\n")
+        import onnxruntime as ort
+        from modules import model_manager
+        cfg = MODELS_CONFIG[model_id]
+        model_path = model_manager.ensure_model_exists(cfg["repo"], cfg["file"], local_filename=cfg["local_name"])
+        
+        # Load ORT session
+        session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        _loaded_models[model_id] = session
+        _current_loaded_model_id = model_id
+        return session
         
     if model_id not in MODELS_CONFIG:
         raise ValueError(f"Model ID '{model_id}' is not registered in the server config.")
@@ -289,7 +329,9 @@ def list_models(task_type: str = Query(..., description="The type of pipeline ta
     Returns the list of available models supported by the server for the specified task type.
     """
     if task_type == "ocr":
-        return {"models": list(MODELS_CONFIG.keys())}
+        return {"models": [k for k, v in MODELS_CONFIG.items() if v.get("handler_class") != "Inpainting"]}
+    elif task_type == "inpaint":
+        return {"models": [k for k, v in MODELS_CONFIG.items() if v.get("handler_class") == "Inpainting"]}
     return {"models": []}
 
 def preprocess_for_ocr(img_b64: str) -> str:
@@ -409,7 +451,7 @@ def dispatch(request: BatchRequest):
     if model == "Ensemble":
         task = "ensemble_ocr"
 
-    if task not in ["ocr", "ensemble_ocr"]:
+    if task not in ["ocr", "ensemble_ocr", "inpaint"]:
         raise HTTPException(status_code=400, detail=f"Unsupported task_type '{task}'")
 
     if task == "ocr":
@@ -980,6 +1022,97 @@ def dispatch(request: BatchRequest):
             }) + "\n"
             yield json.dumps({"type": "result", "results": final_results}) + "\n"
 
+        return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+    elif task == "inpaint":
+        if model not in MODELS_CONFIG:
+            raise HTTPException(status_code=400, detail=f"Inpainting model '{model}' is not registered on the server.")
+
+        def event_generator():
+            try:
+                yield json.dumps({"type": "progress", "percentage": 0.0, "message": "Loading inpainting model..."}) + "\n"
+                session = get_or_load_model(model)
+                
+                yield json.dumps({"type": "progress", "percentage": 0.3, "message": "Decoding image and mask..."}) + "\n"
+                
+                import numpy as np
+                # Decode base64 images
+                img_str = request.batch_payload[0]
+                mask_str = request.batch_payload[1]
+                
+                header1, data1 = img_str.split(",", 1) if "," in img_str else ("", img_str)
+                header2, data2 = mask_str.split(",", 1) if "," in mask_str else ("", mask_str)
+                
+                pil_img = Image.open(io.BytesIO(base64.b64decode(data1))).convert("RGB")
+                pil_mask = Image.open(io.BytesIO(base64.b64decode(data2))).convert("L")
+                
+                img_np = np.array(pil_img)
+                mask_np = np.array(pil_mask)
+                
+                full_h, full_w = img_np.shape[:2]
+                
+                # Pad height and width to modulo 256 using symmetric padding
+                pad_factor = 256
+                h_pad = (pad_factor - (full_h % pad_factor)) % pad_factor
+                w_pad = (pad_factor - (full_w % pad_factor)) % pad_factor
+                
+                pad_h_top = h_pad // 2
+                pad_h_bottom = h_pad - pad_h_top
+                pad_w_left = w_pad // 2
+                pad_w_right = w_pad - pad_w_left
+                
+                padded_img = np.pad(img_np, ((pad_h_top, pad_h_bottom), (pad_w_left, pad_w_right), (0, 0)), mode="symmetric")
+                padded_mask = np.pad(mask_np, ((pad_h_top, pad_h_bottom), (pad_w_left, pad_w_right)), mode="constant", constant_values=0)
+                
+                img_feed = padded_img.astype(np.float32) / 255.0
+                img_feed = np.transpose(img_feed, (2, 0, 1))
+                img_feed = np.expand_dims(img_feed, axis=0)
+                
+                mask_feed = padded_mask.astype(np.float32) / 255.0
+                mask_feed = np.expand_dims(mask_feed, axis=0)
+                mask_feed = np.expand_dims(mask_feed, axis=0)
+                
+                yield json.dumps({"type": "progress", "percentage": 0.6, "message": "Running inpainting inference..."}) + "\n"
+                
+                input_names = [i.name for i in session.get_inputs()]
+                feeds = {}
+                for name in input_names:
+                    if "image" in name.lower() or "input" in name.lower():
+                        feeds[name] = img_feed
+                    elif "mask" in name.lower():
+                        feeds[name] = mask_feed
+                if len(feeds) < 2:
+                    feeds = {input_names[0]: img_feed, input_names[1]: mask_feed}
+                    
+                outputs = session.run(None, feeds)
+                out_img = outputs[0]
+                
+                out_img = np.squeeze(out_img, axis=0)
+                out_img = np.transpose(out_img, (1, 2, 0))
+                
+                h_start = pad_h_top
+                h_end = pad_h_top + full_h
+                w_start = pad_w_left
+                w_end = pad_w_left + full_w
+                cropped_out = out_img[h_start:h_end, w_start:w_end, :]
+                
+                final_img = np.clip(cropped_out * 255.0, 0.0, 255.0).astype(np.uint8)
+                
+                yield json.dumps({"type": "progress", "percentage": 0.8, "message": "Encoding result..."}) + "\n"
+                out_pil = Image.fromarray(final_img)
+                buf = io.BytesIO()
+                out_pil.save(buf, format="PNG")
+                out_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                
+                yield json.dumps({"type": "progress", "percentage": 1.0, "message": "Done."}) + "\n"
+                yield json.dumps({"type": "result", "results": [out_b64]}) + "\n"
+            except Exception as e:
+                sys.stderr.write(f"[Server Dispatcher] Inpaint error: {e}\n")
+                yield json.dumps({"type": "progress", "percentage": 1.0, "message": f"Error: {e}"}) + "\n"
+                yield json.dumps({"type": "result", "results": []}) + "\n"
+            finally:
+                unload_model(model)
+                
         return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
 if __name__ == "__main__":

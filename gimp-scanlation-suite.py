@@ -283,6 +283,20 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 0, 50, 4,
                 GObject.ParamFlags.READWRITE
             )
+            procedure.add_string_argument(
+                "inference-mode",
+                "_Inference Mode",
+                "Execute inpainting locally or offload to remote server",
+                "Local",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "api-url",
+                "_API URL",
+                "Remote dispatcher daemon URL",
+                "http://localhost:7890",
+                GObject.ParamFlags.READWRITE
+            )
             return procedure
 
         elif name == "gimp-scanlation-translate":
@@ -1255,19 +1269,8 @@ class GimpScanlationSuite(Gimp.PlugIn):
         """
         Executes Inpainting to erase text and fill background.
         
-        Rust ONNX Pipeline Equivalents:
-        1. Preprocessing:
-           - Obtains source image and mask (based on detected bounding boxes).
-           - Optional scaling: scales down image/mask if speed is prioritized.
-           - Pad height and width to modulo 8 (or 256 depending on model) using symmetric padding
-             to prevent border artifacts during convolutional downsampling/upsampling.
-        2. ONNX Model Inference (LaMa - Large Mask Inpainting):
-           - Executes `lama_manga.onnx` session.
-           - Input feeds: `image` (float32, scaled [0, 1]) and `mask` (binary float32).
-           - Output is the reconstructed / inpainted image canvas.
-        3. Postprocessing:
-           - Multiplies output by 255.0, clips, and transposes back to standard HWC layout.
-           - Blends the inpainted patches back into GIMP's active layer boundaries.
+        Saves output non-destructively to a new layer named `[Inpaint] <Original Layer Name>`
+        placed directly above the active layer for quick comparison and toggle visibility.
         """
         GimpUi.init("gimp-scanlation-inpaint")
 
@@ -1294,24 +1297,437 @@ class GimpScanlationSuite(Gimp.PlugIn):
             header_box.pack_start(desc_label, False, False, 0)
             
             vbox.pack_start(header_box, False, False, 0)
+
+            # Custom Grid for dropdown selectors
+            grid = Gtk.Grid()
+            grid.set_column_spacing(12)
+            grid.set_row_spacing(12)
+            grid.set_margin_start(12)
+            grid.set_margin_end(12)
+            grid.set_margin_bottom(12)
+
+            # Inference Mode Select
+            inf_label = Gtk.Label()
+            inf_label.set_markup("<b>Inference Mode:</b>")
+            inf_label.set_xalign(0.0)
+            grid.attach(inf_label, 0, 0, 1, 1)
+
+            combo_inf = Gtk.ComboBoxText()
+            combo_inf.append_text("Local")
+            combo_inf.append_text("Remote")
+            grid.attach(combo_inf, 1, 0, 1, 1)
+
+            # Inpaint Model Select
+            model_label = Gtk.Label()
+            model_label.set_markup("<b>Inpaint Model:</b>")
+            model_label.set_xalign(0.0)
+            grid.attach(model_label, 0, 1, 1, 1)
+
+            combo_model = Gtk.ComboBoxText()
+            combo_model.append_text("lama-manga")
+            combo_model.append_text("aot-inpainting")
+            grid.attach(combo_model, 1, 1, 1, 1)
+
+            vbox.pack_start(grid, False, False, 0)
+
+            # Set initial values based on config
+            inf_val = config.get_property("inference-mode") or "Local"
+            if inf_val == "Remote":
+                combo_inf.set_active(1)
+            else:
+                combo_inf.set_active(0)
+
+            model_val = config.get_property("inpaint-model") or "lama-manga"
+            if model_val == "aot-inpainting":
+                combo_model.set_active(1)
+            else:
+                combo_model.set_active(0)
+
+            def on_inf_changed(widget):
+                val = widget.get_active_text()
+                config.set_property("inference-mode", val)
+            combo_inf.connect("changed", on_inf_changed)
+
+            def on_model_changed(widget):
+                val = widget.get_active_text()
+                config.set_property("inpaint-model", val)
+            combo_model.connect("changed", on_model_changed)
+
             vbox.show_all()
             
-            dialog.fill(None)
+            # Render remaining free-text and slider arguments
+            dialog.fill(["dilation", "api-url"])
             
             if not dialog.run():
                 return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
 
-        inpaint_model = config.get_property("inpaint-model")
+        # Parameters extraction
+        inpaint_model = config.get_property("inpaint-model") or "lama-manga"
         dilation = config.get_property("dilation")
+        inference_mode = config.get_property("inference-mode") or "Local"
+        api_url = config.get_property("api-url") or "http://localhost:7890"
 
-        Gimp.message(f"[Koharu Inpaint] Erasing text using '{inpaint_model}' (dilation={dilation}px)...")
+        sys.stderr.write(f"[Koharu Inpaint] Running in {inference_mode} mode using '{inpaint_model}' (dilation={dilation}px)...\n")
 
+        # 1. Verification of active layer
+        if not drawables:
+            Gimp.message("Error: No active drawable/layer selected.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+            
+        active_layer = drawables[0]
+
+        # Check local import requirements
+        if inference_mode == "Local":
+            if model_manager is None:
+                Gimp.message("Error: Model Manager could not be imported.")
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+            try:
+                import onnxruntime as ort
+            except ImportError:
+                Gimp.message("Error: onnxruntime is not installed in the virtual environment. Please run dispatcher or install it.")
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+        else:
+            try:
+                from modules import remote_client
+            except ImportError as e:
+                Gimp.message(f"Error: Remote client module could not be imported: {e}")
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        # Pump events
+        while GLib.MainContext.default().iteration(False):
+            pass
+
+        # 2. Locate the path layer (Detected Bubbles or fallback)
+        target_path = None
+        paths = image.get_paths()
+        for p in paths:
+            if p.get_name().startswith("Detected Bubbles"):
+                target_path = p
+                break
+                
+        if not target_path:
+            selected = image.get_selected_paths()
+            if selected:
+                target_path = selected[0]
+                
+        if not target_path and paths:
+            target_path = paths[0]
+            
+        if not target_path:
+            Gimp.message("Error: No paths/vectors found in the image. Please run detection first.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        sys.stderr.write(f"[Koharu Inpaint] Reading bounding boxes from path: '{target_path.get_name()}'...\n")
+
+        # 3. Retrieve strokes and parse coordinates
+        bounding_boxes = []
+        try:
+            strokes = target_path.get_strokes()
+            for stroke_id in strokes:
+                res = target_path.stroke_get_points(stroke_id)
+                coords = None
+                if isinstance(res, tuple) or isinstance(res, list):
+                    for item in res:
+                        if isinstance(item, list) or isinstance(item, tuple):
+                            if len(item) > 0 and isinstance(item[0], (int, float)):
+                                coords = list(item)
+                                break
+                    if coords is None:
+                        for item in res:
+                            if hasattr(item, "controlpoints"):
+                                coords = list(item.controlpoints)
+                                break
+                            elif hasattr(item, "points"):
+                                coords = list(item.points)
+                                break
+                else:
+                    if hasattr(res, "controlpoints"):
+                        coords = list(res.controlpoints)
+                    elif hasattr(res, "points"):
+                        coords = list(res.points)
+
+                if not coords:
+                    sys.stderr.write(f"[Koharu Inpaint] Skipping stroke {stroke_id}: no coordinates retrieved.\n")
+                    continue
+
+                x_coords = coords[0::2]
+                y_coords = coords[1::2]
+                if not x_coords or not y_coords:
+                    continue
+                    
+                xmin, xmax = min(x_coords), max(x_coords)
+                ymin, ymax = min(y_coords), max(y_coords)
+                
+                bounding_boxes.append((xmin, ymin, xmax, ymax))
+        except Exception as e:
+            sys.stderr.write(f"[Koharu Inpaint] Failed to parse paths/strokes: {e}\n")
+            Gimp.message("Failed to extract coordinates from paths.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        if not bounding_boxes:
+            Gimp.message("No valid bounding boxes found in the selected path.")
+            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+        # Check local model weights presence if in Local Mode
+        if inference_mode == "Local":
+            if inpaint_model == "lama-manga":
+                repo = "mayocream/lama-manga-onnx"
+                filename = "model.onnx"
+                local_filename = "lama-manga.onnx"
+            elif inpaint_model == "aot-inpainting":
+                repo = "anyisalin/aot-inpainting-onnx"
+                filename = "model.onnx"
+                local_filename = "aot-inpainting.onnx"
+            else:
+                Gimp.message(f"Error: Unknown local model option '{inpaint_model}'")
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+            models_dir = os.path.join(plugin_dir, "models")
+            model_file_path = os.path.join(models_dir, local_filename)
+            if not os.path.exists(model_file_path):
+                Gimp.message(f"[Koharu Inpaint] Local model '{inpaint_model}' weights not found. Downloading (approx. 100MB-200MB). This may take a moment...")
+                while GLib.MainContext.default().iteration(False):
+                    pass
+
+        # 4. Extract pixel buffer and construct mask
+        try:
+            buffer = active_layer.get_buffer()
+            rect = buffer.get_extent()
+            full_w = rect.width
+            full_h = rect.height
+
+            # Retrieve layer offsets
+            success, offset_x, offset_y = active_layer.get_offsets()
+            if not success:
+                offset_x, offset_y = 0, 0
+
+            # Pump events
+            while GLib.MainContext.default().iteration(False):
+                pass
+
+            sys.stderr.write(f"[Koharu Inpaint] Fetching active layer pixel buffer ({full_w}x{full_h})...\n")
+            raw_data = buffer.get(rect, 1.0, "RGB u8", Gegl.AbyssPolicy.NONE)
+            img_np = np.frombuffer(raw_data, dtype=np.uint8).reshape((full_h, full_w, 3))
+        except Exception as e:
+            sys.stderr.write(f"[Koharu Inpaint] Failed to read layer pixels: {e}\n")
+            Gimp.message("Failed to read active layer pixels.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        # Construct full-canvas mask
+        mask_np = np.zeros((full_h, full_w), dtype=np.uint8)
+        for box in bounding_boxes:
+            xmin, ymin, xmax, ymax = box
+            x0 = int(np.clip(xmin - offset_x, 0, full_w))
+            x1 = int(np.clip(xmax - offset_x, 0, full_w))
+            y0 = int(np.clip(ymin - offset_y, 0, full_h))
+            y1 = int(np.clip(ymax - offset_y, 0, full_h))
+            
+            if x1 > x0 and y1 > y0:
+                mask_np[y0:y1, x0:x1] = 255
+
+        # Dilation
+        if dilation > 0:
+            try:
+                from PIL import Image, ImageFilter
+                mask_pil = Image.fromarray(mask_np)
+                mask_pil = mask_pil.filter(ImageFilter.MaxFilter(size=2 * dilation + 1))
+                mask_np = np.array(mask_pil)
+            except Exception as dil_err:
+                sys.stderr.write(f"[Koharu Inpaint] Mask dilation failed: {dil_err}\n")
+
+        # 5. Run inference with background thread and event loop pumping
+        import threading
+        import time
+        import io
+        import base64
+        from PIL import Image
+
+        result_container = []
+        error_container = []
+
+        def progress_cb(percentage, message):
+            def update_ui(pct, msg):
+                if msg:
+                    Gimp.progress_set_text(msg)
+                Gimp.progress_update(pct)
+                return False
+            GLib.idle_add(update_ui, percentage, message)
+
+        if inference_mode == "Local":
+            def worker():
+                try:
+                    progress_cb(0.1, f"Loading model '{inpaint_model}'...")
+                    model_path = model_manager.ensure_model_exists(repo, filename, local_filename=local_filename)
+                    session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+                    
+                    progress_cb(0.4, "Preparing symmetric padding & feeds...")
+                    # Padding to multiples of 256
+                    pad_factor = 256
+                    h_pad = (pad_factor - (full_h % pad_factor)) % pad_factor
+                    w_pad = (pad_factor - (full_w % pad_factor)) % pad_factor
+                    
+                    pad_h_top = h_pad // 2
+                    pad_h_bottom = h_pad - pad_h_top
+                    pad_w_left = w_pad // 2
+                    pad_w_right = w_pad - pad_w_left
+                    
+                    padded_img = np.pad(img_np, ((pad_h_top, pad_h_bottom), (pad_w_left, pad_w_right), (0, 0)), mode="symmetric")
+                    padded_mask = np.pad(mask_np, ((pad_h_top, pad_h_bottom), (pad_w_left, pad_w_right)), mode="constant", constant_values=0)
+                    
+                    img_feed = padded_img.astype(np.float32) / 255.0
+                    img_feed = np.transpose(img_feed, (2, 0, 1))
+                    img_feed = np.expand_dims(img_feed, axis=0)
+                    
+                    mask_feed = padded_mask.astype(np.float32) / 255.0
+                    mask_feed = np.expand_dims(mask_feed, axis=0)
+                    mask_feed = np.expand_dims(mask_feed, axis=0)
+                    
+                    progress_cb(0.6, "Running local inpainting session...")
+                    
+                    input_names = [i.name for i in session.get_inputs()]
+                    feeds = {}
+                    for name in input_names:
+                        if "image" in name.lower() or "input" in name.lower():
+                            feeds[name] = img_feed
+                        elif "mask" in name.lower():
+                            feeds[name] = mask_feed
+                    if len(feeds) < 2:
+                        feeds = {input_names[0]: img_feed, input_names[1]: mask_feed}
+                        
+                    outputs = session.run(None, feeds)
+                    out_img = outputs[0]
+                    
+                    out_img = np.squeeze(out_img, axis=0)
+                    out_img = np.transpose(out_img, (1, 2, 0))
+                    
+                    h_start = pad_h_top
+                    h_end = pad_h_top + full_h
+                    w_start = pad_w_left
+                    w_end = pad_w_left + full_w
+                    cropped_out = out_img[h_start:h_end, w_start:w_end, :]
+                    
+                    final_img_np = np.clip(cropped_out * 255.0, 0.0, 255.0).astype(np.uint8)
+                    result_container.append(final_img_np)
+                    progress_cb(1.0, "Done.")
+                except Exception as ex:
+                    error_container.append(ex)
+        else:
+            def worker():
+                try:
+                    progress_cb(0.1, "Encoding image and mask to PNG...")
+                    # Encode active layer image
+                    pil_img = Image.fromarray(img_np)
+                    buf_img = io.BytesIO()
+                    pil_img.save(buf_img, format="PNG")
+                    img_b64 = base64.b64encode(buf_img.getvalue()).decode("utf-8")
+                    
+                    # Encode mask
+                    pil_mask = Image.fromarray(mask_np)
+                    buf_mask = io.BytesIO()
+                    pil_mask.save(buf_mask, format="PNG")
+                    mask_b64 = base64.b64encode(buf_mask.getvalue()).decode("utf-8")
+                    
+                    progress_cb(0.3, "Offloading to remote dispatcher server...")
+                    
+                    res_b64_list = remote_client.dispatch_batch(
+                        "inpaint",
+                        inpaint_model,
+                        [img_b64, mask_b64],
+                        api_url,
+                        progress_callback=progress_cb
+                    )
+                    
+                    if not res_b64_list:
+                        raise RuntimeError("No result received from remote dispatcher.")
+                    
+                    res_b64 = res_b64_list[0]
+                    img_data = base64.b64decode(res_b64)
+                    inpainted_pil = Image.open(io.BytesIO(img_data)).convert("RGB")
+                    final_img_np = np.array(inpainted_pil)
+                    
+                    result_container.append(final_img_np)
+                    progress_cb(1.0, "Done.")
+                except Exception as ex:
+                    error_container.append(ex)
+
+        sys.stderr.write(f"[Koharu Inpaint] Dispatching inpainting thread in background...\n")
+        Gimp.progress_init(f"Inpainting dialogue regions ({inpaint_model})...")
+        
+        t = threading.Thread(target=worker)
+        t.daemon = True
+        t.start()
+
+        # Pump events until worker finishes
+        while t.is_alive():
+            while GLib.MainContext.default().iteration(False):
+                pass
+            time.sleep(0.05)
+
+        Gimp.progress_end()
+
+        # Check results
+        if not result_container:
+            err_msg = error_container[0] if error_container else "Unknown error occurred during inpainting"
+            sys.stderr.write(f"[Koharu Inpaint] Inference error: {err_msg}\n")
+            Gimp.message(f"Inpainting failed: {err_msg}")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        final_img = result_container[0]
+
+        # 6. Save result as non-destructive layer above active_layer
+        try:
+            # Duplicate the active layer (preserves transparency/alpha settings/size)
+            copy_layer = active_layer.copy()
+            copy_layer.set_name(f"[Inpaint] {active_layer.get_name()}")
+        except Exception as copy_err:
+            sys.stderr.write(f"[Koharu Inpaint] Failed to duplicate layer: {copy_err}\n")
+            Gimp.message("Failed to create inpainting layer copy.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        # Write output pixels into copy_layer
+        try:
+            copy_buffer = copy_layer.get_buffer()
+            copy_rect = copy_buffer.get_extent()
+            copy_buffer.set(copy_rect, "RGB u8", final_img.tobytes())
+        except Exception as write_err:
+            sys.stderr.write(f"[Koharu Inpaint] Failed to write inpainted buffer: {write_err}\n")
+            Gimp.message("Failed to write inpainted pixels to the copied layer.")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        # Insert layer exactly above active layer
+        try:
+            parent = active_layer.get_parent()
+            siblings = parent.get_children() if parent else image.get_layers()
+            try:
+                idx = siblings.index(active_layer)
+                image.insert_layer(copy_layer, parent, idx)
+            except ValueError:
+                image.insert_layer(copy_layer, parent, 0)
+        except Exception as insert_err:
+            sys.stderr.write(f"[Koharu Inpaint] Failed to insert layer: {insert_err}\n")
+            try:
+                image.insert_layer(copy_layer, None, 0)
+            except Exception:
+                Gimp.message("Failed to insert the inpainted layer into image.")
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+
+        # Activate the new layer
+        try:
+            image.set_selected_drawables([copy_layer])
+        except Exception as sel_err:
+            sys.stderr.write(f"[Koharu Inpaint] Failed to set active layer: {sel_err}\n")
+
+        # Flush display
+        try:
+            Gimp.displays_flush()
+        except Exception:
+            pass
+
+        Gimp.message(f"Inpainting complete! Created non-destructive layer '{copy_layer.get_name()}' above '{active_layer.get_name()}'.")
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
     def run_translate(self, procedure, run_mode, image, drawables, config, run_data):
         """
-        Executes Translation & Typesetting.
-        
         Rust/LLM Integration:
         1. Context Loading & Layout Mapping:
            - Groups OCR text fragments in reading order (top-right to bottom-left for standard manga).
