@@ -82,11 +82,20 @@ def generate_local_vlm_prompt(model_id: str, crop_img_pil: Image.Image) -> str:
             }
         ]
         
-        response = vlm.create_chat_completion(messages=messages)
+        response = vlm.create_chat_completion(
+            messages=messages,
+            max_tokens=30,
+            temperature=0.2
+        )
         res_text = response["choices"][0]["message"]["content"].strip()
         res_text = res_text.strip('"\'')
         if ":" in res_text and not "," in res_text.split(":", 1)[0]:
             res_text = res_text.split(":", 1)[1].strip()
+        
+        # Clean and limit to at most 12 keywords
+        parts = [p.strip() for p in res_text.split(",") if p.strip()]
+        parts = parts[:12]
+        res_text = ", ".join(parts)
         return res_text
     except Exception as e:
         sys.stderr.write(f"[Server Inpaint Service] Local VLM auto-prompt generation failed: {e}\n")
