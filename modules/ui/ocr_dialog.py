@@ -19,7 +19,19 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
         list of selected indices, or None if the dialog was canceled.
     """
     dialog = GimpUi.ProcedureDialog.new(procedure, config, "OCR Selected Blocks")
+    dialog.set_default_size(600, 700)
     vbox = dialog.get_content_area()
+    
+    # Main scrolling window to prevent layout overflow on smaller screens
+    scrolled_window = Gtk.ScrolledWindow()
+    scrolled_window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    scrolled_window.set_propagate_natural_width(True)
+    scrolled_window.set_propagate_natural_height(True)
+    
+    # Internal vertical container
+    scroll_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    scrolled_window.add(scroll_vbox)
+    vbox.pack_start(scrolled_window, True, True, 0)
     
     # Premium Header Box
     header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -38,7 +50,7 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
     desc_label.set_line_wrap(True)
     desc_label.set_xalign(0.0)
     header_box.pack_start(desc_label, False, False, 0)
-    vbox.pack_start(header_box, False, False, 0)
+    scroll_vbox.pack_start(header_box, False, False, 0)
 
     # Custom Grid for dropdown selectors
     grid = Gtk.Grid()
@@ -120,7 +132,7 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
     note_label.set_xalign(0.0)
     grid.attach(note_label, 0, 7, 2, 1)
     
-    vbox.pack_start(grid, False, False, 0)
+    scroll_vbox.pack_start(grid, False, False, 0)
 
     # Regions Checklist Frame
     regions_frame = Gtk.Frame(label="  Regions to Process (OCR Checklist)  ")
@@ -207,7 +219,7 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
     btn_deselect_all.connect("clicked", on_deselect_all_clicked)
     
     regions_frame.add(regions_vbox)
-    vbox.pack_start(regions_frame, False, False, 0)
+    scroll_vbox.pack_start(regions_frame, False, False, 0)
     
     # Set initial values based on config
     inf_val = config.get_property("inference-mode") or "Local"
@@ -366,9 +378,36 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
     combo_material.connect("changed", on_material_changed)
 
     update_model_dropdown()
-    vbox.show_all()
     
-    dialog.fill(["api-url", "target-language", "ensemble-consensus", "configure-per-path", "half-to-full"])
+    # Fetch additional GIMP procedure dialog auto-generated settings
+    widget_api_url = dialog.get_widget("api-url", GObject.TYPE_NONE)
+    widget_target_lang = dialog.get_widget("target-language", GObject.TYPE_NONE)
+    widget_ensemble = dialog.get_widget("ensemble-consensus", GObject.TYPE_NONE)
+    widget_configure_per_path = dialog.get_widget("configure-per-path", GObject.TYPE_NONE)
+    widget_half_to_full = dialog.get_widget("half-to-full", GObject.TYPE_NONE)
+
+    # Wrap these additional settings in a styled Frame
+    settings_frame = Gtk.Frame(label="  System & Post-Processing Settings  ")
+    settings_frame.set_margin_start(12)
+    settings_frame.set_margin_end(12)
+    settings_frame.set_margin_bottom(12)
+    
+    settings_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    settings_vbox.set_margin_top(8)
+    settings_vbox.set_margin_bottom(8)
+    settings_vbox.set_margin_start(12)
+    settings_vbox.set_margin_end(12)
+    
+    settings_vbox.pack_start(widget_api_url, False, False, 0)
+    settings_vbox.pack_start(widget_target_lang, False, False, 0)
+    settings_vbox.pack_start(widget_ensemble, False, False, 0)
+    settings_vbox.pack_start(widget_configure_per_path, False, False, 0)
+    settings_vbox.pack_start(widget_half_to_full, False, False, 0)
+    
+    settings_frame.add(settings_vbox)
+    scroll_vbox.pack_start(settings_frame, False, False, 0)
+    
+    vbox.show_all()
     
     if not dialog.run():
         return None
