@@ -1475,7 +1475,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 filename = "model.onnx"
                 local_filename = "lama-manga.onnx"
             elif inpaint_model == "aot-inpainting":
-                repo = "anyisalin/aot-inpainting-onnx"
+                repo = "ogkalu/aot-inpainting"
                 filename = "model.onnx"
                 local_filename = "aot-inpainting.onnx"
             else:

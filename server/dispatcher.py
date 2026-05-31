@@ -153,7 +153,7 @@ MODELS_CONFIG = {
         "n_ctx": 0
     },
     "aot-inpainting": {
-        "repo": "anyisalin/aot-inpainting-onnx",
+        "repo": "ogkalu/aot-inpainting",
         "file": "model.onnx",
         "projector_repo": None,
         "projector_file": None,
