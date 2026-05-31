@@ -11,7 +11,10 @@ gimp-scanlation-suite/
 │   ├── __init__.py
 │   └── model_manager.py      # Handles Hugging Face model downloads on the server
 └── server/
-    ├── dispatcher.py         # FastAPI application entry point
+    ├── main.py               # FastAPI application entry point
+    ├── core/                 # Server configuration and prompt dictionary
+    ├── routes/               # API route submodules
+    ├── services/             # VLM, OCR, and Inpainting ML services
     ├── requirements.txt      # Server python package list
     └── README.md             # Setup guide (this file)
 ```
@@ -98,7 +101,7 @@ pip install -r server/requirements.txt
 
 Start the FastAPI daemon using `uvicorn`:
 ```bash
-python3 -m uvicorn server.dispatcher:app --host 0.0.0.0 --port 7890
+python3 -m uvicorn server.main:app --host 0.0.0.0 --port 7890
 ```
 - `--host 0.0.0.0` allows the server to accept connections from other computers.
 - `--port 7890` matches GIMP's default port.
