@@ -95,7 +95,30 @@ def generate_local_vlm_prompt(vlm, crop_img_pil: Image.Image) -> str:
         sys.stderr.write(f"[Server Inpaint Service] Local VLM auto-prompt generation failed: {e}\n")
         return "manga reconstruction, detailed background, high quality line art"
 
+def calculate_dynamic_crop_side(w: int, h: int) -> int:
+    """
+    Dynamically determines the side length of the square inpainting crop.
+    - Small bubbles get a fixed 256px context window to ensure enough surrounding context.
+    - Medium bubbles smoothly scale the expansion multiplier from 1.5x down to 1.25x.
+    - Large bubbles scale down to 1.1x to prevent severe resolution downscaling when resized to 512x512.
+    """
+    base = max(w, h)
+    if base <= 160:
+        return 256
+    elif base <= 256:
+        # Interpolate crop size from 256px to 384px
+        return int(256 + (base - 160) * (384 - 256) / (256 - 160))
+    elif base <= 768:
+        # Interpolate multiplier from 1.5x down to 1.25x
+        mult = 1.5 - (base - 256) / (768 - 256) * 0.25
+        return int(base * mult)
+    else:
+        # Scale down to minimum 1.1x multiplier for extremely large regions
+        mult = max(1.1, 1.25 - (base - 768) / 1000 * 0.15)
+        return int(base * mult)
+
 def run_inpaint_generator(model: str, batch_payload: list, options: dict):
+
     """
     Generator yielding newline-separated JSON progress strings, ending with inpainted base64.
     """
@@ -156,10 +179,11 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
                         if vlm:
                             for idx, box in enumerate(bounding_boxes):
                                 xmin, ymin, xmax, ymax = box
-                                side = int(max(xmax - xmin, ymax - ymin) * 1.6)
-                                if side < 256:
-                                    side = 256
+                                w = xmax - xmin
+                                h = ymax - ymin
+                                side = calculate_dynamic_crop_side(w, h)
                                 cx = (xmin + xmax) // 2
+
                                 cy = (ymin + ymax) // 2
                                 x0 = int(cx - side // 2)
                                 x1 = x0 + side
@@ -209,10 +233,8 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
                 if w <= 0 or h <= 0:
                     continue
                     
-                # Centered square with a margin of 1.6x max dimension
-                side = int(max(w, h) * 1.6)
-                if side < 256:
-                    side = 256
+                # Centered square with a dynamic context window
+                side = calculate_dynamic_crop_side(w, h)
                 
                 cx = (xmin + xmax) // 2
                 cy = (ymin + ymax) // 2
