@@ -101,20 +101,25 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
                     cfg["repo"],
                     torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                     safety_checker=None, # Uncensored support for SD 1.5 style models
-                    requires_safety_checker=False
+                    requires_safety_checker=False,
+                    low_cpu_mem_usage=True
                 )
             except TypeError:
                 # Fallback for SDXL which does not accept safety_checker parameters
                 pipe = AutoPipelineForInpainting.from_pretrained(
                     cfg["repo"],
-                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                    low_cpu_mem_usage=True
                 )
+            
+            # Enable attention slicing to drastically reduce peak RAM usage
+            try:
+                pipe.enable_attention_slicing()
+            except Exception:
+                pass
+
             if torch.cuda.is_available():
                 pipe = pipe.to("cuda")
-                try:
-                    pipe.enable_attention_slicing()
-                except Exception:
-                    pass
             _loaded_models[model_id] = pipe
             _current_loaded_model_id = model_id
             return pipe
