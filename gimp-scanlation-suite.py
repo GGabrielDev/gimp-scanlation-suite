@@ -109,6 +109,34 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "Text Only",
                 GObject.ParamFlags.READWRITE
             )
+            procedure.add_string_argument(
+                "detection-mode",
+                "Detection _Mode",
+                "Mode to run: Initial Detection or Tight Pathing",
+                "Initial Detection",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "tight-path-name",
+                "Tight Path _Name",
+                "The target path name for tightening",
+                "",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_string_argument(
+                "tight-path-mode",
+                "Tight Path _Mode",
+                "Tighten around Speech Bubble inside or Floating Text / SFX",
+                "Speech Bubble",
+                GObject.ParamFlags.READWRITE
+            )
+            procedure.add_int_argument(
+                "tight-path-dilation",
+                "Tight Path _Dilation (px)",
+                "Dilation/expansion radius for SFX contours",
+                1, 100, 8,
+                GObject.ParamFlags.READWRITE
+            )
             return procedure
 
         elif name == "gimp-scanlation-ocr":
@@ -439,7 +467,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
 
         if run_mode == Gimp.RunMode.INTERACTIVE:
             from modules.ui.detect_dialog import show_detect_dialog
-            ok = show_detect_dialog(procedure, config)
+            ok = show_detect_dialog(procedure, config, image)
             if not ok:
                 return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
 
