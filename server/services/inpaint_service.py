@@ -270,7 +270,6 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
                 crop_img_pil = Image.fromarray(crop_img).resize((512, 512), Image.Resampling.BILINEAR)
                 crop_mask_pil = Image.fromarray(crop_mask).resize((512, 512), Image.Resampling.NEAREST)
                 
-                import time
                 inf_start = time.time()
                 
                 if is_diffusion:
