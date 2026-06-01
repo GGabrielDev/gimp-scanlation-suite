@@ -47,8 +47,8 @@ def dispatch_batch(task_type, model_id, batch_payload, api_url, options=None, pr
     
     sys.stderr.write(f"[Remote Client] Dispatching '{task_type}' task (model='{model_id}') to: {url}...\n")
     
-    # 600 second timeout for lazy-loading larger models and streaming chunked responses
-    response = requests.post(url, json=payload, timeout=600.0, stream=True)
+    # Remove timeout limit for lazy-loading larger models and streaming chunked responses on slow CPUs
+    response = requests.post(url, json=payload, timeout=None, stream=True)
     
     if response.status_code != 200:
         error_msg = f"Server returned error code {response.status_code}"
