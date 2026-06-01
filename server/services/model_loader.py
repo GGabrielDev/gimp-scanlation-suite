@@ -86,8 +86,16 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         cfg = MODELS_CONFIG[model_id]
         model_path = model_manager.ensure_model_exists(cfg["repo"], cfg["file"], local_filename=cfg["local_name"])
         
-        # Load ORT session
-        session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        # Determine best available execution providers for ONNX Runtime
+        providers = ["CPUExecutionProvider"]
+        if not force_cpu:
+            available = ort.get_available_providers()
+            if "CUDAExecutionProvider" in available:
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            elif "ROCmExecutionProvider" in available:
+                providers = ["ROCmExecutionProvider", "CPUExecutionProvider"]
+        sys.stderr.write(f"[Server Model Loader] Using ONNX Runtime providers: {providers}\n")
+        session = ort.InferenceSession(model_path, providers=providers)
         _loaded_models[model_id] = session
         _current_loaded_model_id = model_id
         log_memory_status(f"After loading ONNX inpainting model '{model_id}'")
