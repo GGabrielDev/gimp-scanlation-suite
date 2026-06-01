@@ -179,7 +179,6 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
                 if auto_prompt and not prompt_input:
                     if is_local_vlm:
                         yield json.dumps({"type": "progress", "percentage": 0.4, "message": f"Generating prompts using local VLM {consensus_arbiter}..."}) + "\n"
-                        from server.services.model_loader import get_or_load_model, unload_model
                         vlm = get_or_load_model(consensus_arbiter)
                         if vlm:
                             for idx, box in enumerate(bounding_boxes):
