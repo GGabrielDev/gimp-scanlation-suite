@@ -78,6 +78,25 @@ CMAKE_ARGS="-DGGML_VULKAN=on" pip install llama-cpp-python==0.3.23
 CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python==0.3.23
 ```
 
+#### **How to Verify GPU Acceleration**:
+After installation, always verify if `llama-cpp-python` successfully compiled with GPU acceleration support:
+```bash
+python3 -c "import llama_cpp; print('GPU Offload Support:', llama_cpp.llama_supports_gpu_offload())"
+```
+* **If `True`**: GPU acceleration is active. When running Vulkan, you should see logs like `ggml_vulkan: Found 1 Vulkan devices...` on model load.
+* **If `False`**: The compiler flags were not picked up or a cached CPU-only package/wheel was installed. Proceed to troubleshooting below.
+
+#### **Troubleshooting Compilation & Dependency Conflicts**:
+* **Force Rebuild from Source**: If GPU offload shows `False`, clear pip's cache and force a complete rebuild of the bindings:
+  ```bash
+  env CMAKE_ARGS="-DGGML_VULKAN=on" pip install --upgrade --force-reinstall llama-cpp-python --no-cache-dir
+  ```
+* **Numpy Version Conflict with `manga-ocr`**: Force-reinstalling `llama-cpp-python` can pull `numpy >= 2.0`, which breaks compatibility with `manga-ocr` (which requires `numpy < 2`). If you encounter a numpy dependency resolver conflict or error, run:
+  ```bash
+  pip install "numpy<2"
+  ```
+  This downgrades numpy back to a compatible version (e.g. `1.26.4`) while keeping GPU support fully active.
+
 ---
 
 ### 3. Install Server Dependencies
