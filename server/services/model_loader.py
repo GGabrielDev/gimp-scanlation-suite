@@ -7,12 +7,22 @@ _loaded_models = {}
 _current_loaded_model_id = None
 _n_gpu_layers_used = -1
 
+def log_memory_status(message: str):
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        sys.stderr.write(f"[Server Memory Monitor] {message} | RAM Free: {mem.available / 1024**3:.2f}GB / {mem.total / 1024**3:.2f}GB ({mem.percent}% used)\n")
+    except Exception:
+        sys.stderr.write(f"[Server Memory Monitor] {message}\n")
+
+
 def unload_model(model_id: str):
     """
     Cleans up a model and calls garbage collector to free up system VRAM/RAM.
     """
     global _loaded_models, _current_loaded_model_id
     if model_id in _loaded_models:
+        log_memory_status(f"Before unloading model '{model_id}'")
         sys.stderr.write(f"[Server Model Loader] Unloading model '{model_id}' to free VRAM/RAM...\n")
         del _loaded_models[model_id]
         if _current_loaded_model_id == model_id:
@@ -26,6 +36,8 @@ def unload_model(model_id: str):
                 torch.cuda.empty_cache()
         except ImportError:
             pass
+        log_memory_status(f"After unloading model '{model_id}' and garbage collecting")
+
 
 def get_or_load_model(model_id: str, force_cpu: bool = False):
     """
@@ -43,12 +55,15 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         if "manga_ocr" in _loaded_models:
             return _loaded_models["manga_ocr"]
             
+        log_memory_status("Before initializing PyTorch manga-ocr")
         sys.stderr.write("[Server Model Loader] Initializing PyTorch manga-ocr...\n")
         from manga_ocr import MangaOcr
         mocr = MangaOcr()
         _loaded_models["manga_ocr"] = mocr
         _current_loaded_model_id = "manga_ocr"
+        log_memory_status("After initializing PyTorch manga-ocr")
         return mocr
+
 
     # Bypass loading for API models
     if model_id in MODELS_CONFIG and MODELS_CONFIG[model_id].get("handler_class") == "DeepSeekAPI":
@@ -64,6 +79,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         if model_id in _loaded_models:
             return _loaded_models[model_id]
         
+        log_memory_status(f"Before loading ONNX inpainting model '{model_id}'")
         sys.stderr.write(f"[Server Model Loader] Initializing ONNX inpainting model '{model_id}'...\n")
         import onnxruntime as ort
         from modules import model_manager
@@ -74,7 +90,9 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
         _loaded_models[model_id] = session
         _current_loaded_model_id = model_id
+        log_memory_status(f"After loading ONNX inpainting model '{model_id}'")
         return session
+
         
     # Load Diffusion inpainting model via HuggingFace diffusers
     if model_id in MODELS_CONFIG and MODELS_CONFIG[model_id].get("handler_class") == "DiffusionInpainting":
@@ -84,6 +102,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         if model_id in _loaded_models:
             return _loaded_models[model_id]
             
+        log_memory_status(f"Before loading Diffusion Inpainting model '{model_id}'")
         sys.stderr.write(f"[Server Model Loader] Initializing Diffusion Inpainting model '{model_id}'...\n")
         try:
             from diffusers import AutoPipelineForInpainting
@@ -122,7 +141,9 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
                 pipe = pipe.to("cuda")
             _loaded_models[model_id] = pipe
             _current_loaded_model_id = model_id
+            log_memory_status(f"After loading Diffusion Inpainting model '{model_id}'")
             return pipe
+
         except Exception as e:
             sys.stderr.write(f"[Server Model Loader] Failed to load Diffusion model: {e}\n")
             raise e

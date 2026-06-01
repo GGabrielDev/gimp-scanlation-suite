@@ -3,13 +3,12 @@
 
 """
 GIMP 3 Scanlation Suite Scaffolding
-Part of the Koharu Manga Translation Project
 
 This GIMP 3 Python plugin registers four procedures under the 'Filters > Scanlation' menu:
 1. Detect Text & Bubbles: Bounding box and mask detection (YOLO/Segmentation).
 2. OCR Selected Blocks: Japanese Text recognition (ViT + BERT / MangaOCR).
-3. Inpaint / Erase Text: Cleans dialogue bounds (LaMa/AOT-Inpaint).
-4. Translate & Render: Connects to local LLMs (via Koharu API) and typesets translations.
+3. Inpaint / Erase Text: Cleans dialogue dialogue bounds (LaMa/AOT-Inpaint).
+4. Translate & Render: Connects to local LLMs (via Remote API) and typesets translations.
 
 Each procedure pops up a GimpUi / GTK3 configuration dialog.
 """
@@ -42,19 +41,19 @@ import numpy as np
 try:
     from modules import scouter
 except ImportError as e:
-    sys.stderr.write(f"[Koharu Suite] Failed to import scouter: {e}\n")
+    sys.stderr.write(f"[Scanlation Suite] Failed to import scouter: {e}\n")
     scouter = None
 
 try:
     from modules import model_manager
 except ImportError as e:
-    sys.stderr.write(f"[Koharu Suite] Failed to import model_manager: {e}\n")
+    sys.stderr.write(f"[Scanlation Suite] Failed to import model_manager: {e}\n")
     model_manager = None
 
 try:
     from modules import ocr_engine
 except ImportError as e:
-    sys.stderr.write(f"[Koharu Suite] Failed to import ocr_engine: {e}\n")
+    sys.stderr.write(f"[Scanlation Suite] Failed to import ocr_engine: {e}\n")
     ocr_engine = None
 
 
@@ -86,7 +85,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "Runs Yolov8/Segmentation detection to find bubble and text bounds.",
                 name
             )
-            procedure.set_attribution("Koharu Contributors", "GPL-3.0", "2026")
+            procedure.set_attribution("Scanlation Suite Contributors", "GPL-3.0", "2026")
 
             # Arguments
             procedure.add_string_argument(
@@ -126,7 +125,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "Performs VisionEncoderDecoder (ViT + Bert) OCR on text regions.",
                 name
             )
-            procedure.set_attribution("Koharu Contributors", "GPL-3.0", "2026")
+            procedure.set_attribution("Scanlation Suite Contributors", "GPL-3.0", "2026")
 
             # Arguments
             procedure.add_string_argument(
@@ -229,7 +228,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "Applies LaMa or AOT-Inpainting model to clear text masks.",
                 name
             )
-            procedure.set_attribution("Koharu Contributors", "GPL-3.0", "2026")
+            procedure.set_attribution("Scanlation Suite Contributors", "GPL-3.0", "2026")
 
             # Arguments
             procedure.add_string_argument(
@@ -318,7 +317,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "Queries LLM translation server and renders vertical CJK or horizontal text.",
                 name
             )
-            procedure.set_attribution("Koharu Contributors", "GPL-3.0", "2026")
+            procedure.set_attribution("Scanlation Suite Contributors", "GPL-3.0", "2026")
 
             # Arguments
             procedure.add_string_argument(
@@ -337,8 +336,8 @@ class GimpScanlationSuite(Gimp.PlugIn):
             )
             procedure.add_string_argument(
                 "api-url",
-                "Koharu _API / LLM URL",
-                "Endpoint for local LLM or Koharu translator server",
+                "Remote _API / LLM URL",
+                "Endpoint for local LLM or remote translator server",
                 "http://localhost:7890",
                 GObject.ParamFlags.READWRITE
             )
@@ -393,7 +392,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 "Fills path with active FG/text color, and outlines it with active BG color on separate layers.",
                 name
             )
-            procedure.set_attribution("Koharu Contributors", "GPL-3.0", "2026")
+            procedure.set_attribution("Scanlation Suite Contributors", "GPL-3.0", "2026")
 
             # Arguments
             procedure.add_int_argument(
@@ -480,7 +479,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             Gimp.message("Error: No paths/vectors found in the image. Please run detection first.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
-        sys.stderr.write(f"[Koharu OCR] Reading bounding boxes from path: '{target_path.get_name()}'...\n")
+        sys.stderr.write(f"[Scanlation OCR] Reading bounding boxes from path: '{target_path.get_name()}'...\n")
 
         # Retrieve strokes and parse coordinates
         bounding_boxes = []
@@ -510,7 +509,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                         coords = list(res.points)
 
                 if not coords:
-                    sys.stderr.write(f"[Koharu OCR] Skipping stroke {stroke_id}: no coordinates retrieved.\n")
+                    sys.stderr.write(f"[Scanlation OCR] Skipping stroke {stroke_id}: no coordinates retrieved.\n")
                     continue
 
                 x_coords = coords[0::2]
@@ -523,7 +522,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 
                 bounding_boxes.append((xmin, ymin, xmax, ymax))
         except Exception as e:
-            sys.stderr.write(f"[Koharu OCR] Failed to parse paths/strokes: {e}\n")
+            sys.stderr.write(f"[Scanlation OCR] Failed to parse paths/strokes: {e}\n")
             Gimp.message("Failed to extract coordinates from paths.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -595,7 +594,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 preview_layer = layer
                 break
 
-            sys.stderr.write(f"[Koharu Translator] Using layer '{preview_layer.get_name()}' for preview cropping.\n")
+            sys.stderr.write(f"[Scanlation Translator] Using layer '{preview_layer.get_name()}' for preview cropping.\n")
 
             buffer = preview_layer.get_buffer()
             rect = buffer.get_extent()
@@ -608,7 +607,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             raw_data = buffer.get(rect, 1.0, "RGB u8", Gegl.AbyssPolicy.NONE)
             img_np = np.frombuffer(raw_data, dtype=np.uint8).reshape((full_h, full_w, 3))
         except Exception as e:
-            sys.stderr.write(f"[Koharu Translator] Failed to read preview layer pixels: {e}\n")
+            sys.stderr.write(f"[Scanlation Translator] Failed to read preview layer pixels: {e}\n")
             try:
                 buffer = active_layer.get_buffer()
                 rect = buffer.get_extent()
@@ -621,7 +620,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 raw_data = buffer.get(rect, 1.0, "RGB u8", Gegl.AbyssPolicy.NONE)
                 img_np = np.frombuffer(raw_data, dtype=np.uint8).reshape((full_h, full_w, 3))
             except Exception as active_err:
-                sys.stderr.write(f"[Koharu Translator] Failed to read active layer fallback pixels: {active_err}\n")
+                sys.stderr.write(f"[Scanlation Translator] Failed to read active layer fallback pixels: {active_err}\n")
                 Gimp.message("Failed to read active layer pixels.")
                 return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -645,7 +644,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
             Gimp.message("Error: No paths/vectors found in the image. Please run detection first.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
-        sys.stderr.write(f"[Koharu Translator] Reading bounding boxes from path: '{target_path.get_name()}'...\n")
+        sys.stderr.write(f"[Scanlation Translator] Reading bounding boxes from path: '{target_path.get_name()}'...\n")
 
         # 3. Retrieve strokes and parse coordinates
         bounding_boxes = []
@@ -687,7 +686,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                 
                 bounding_boxes.append((xmin, ymin, xmax, ymax))
         except Exception as e:
-            sys.stderr.write(f"[Koharu Translator] Failed to parse paths/strokes: {e}\n")
+            sys.stderr.write(f"[Scanlation Translator] Failed to parse paths/strokes: {e}\n")
             Gimp.message("Failed to extract coordinates from paths.")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -713,7 +712,7 @@ class GimpScanlationSuite(Gimp.PlugIn):
                         if text_val.strip():
                             ocr_texts.append((tx, ty, text_val))
             except Exception as ocr_read_err:
-                sys.stderr.write(f"[Koharu Translator] Failed to read OCR layers: {ocr_read_err}\n")
+                sys.stderr.write(f"[Scanlation Translator] Failed to read OCR layers: {ocr_read_err}\n")
 
         # Map OCR texts back to bounding boxes spatially (overlap with 20px tolerance)
         box_ocr_texts = []

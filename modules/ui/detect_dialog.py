@@ -10,7 +10,7 @@ from gi.repository import GLib
 
 def show_detect_dialog(procedure, config):
     """
-    Builds and displays the interactive Koharu Text & Bubble Detector dialog.
+    Builds and displays the interactive Text & Bubble Detector dialog.
     Returns True if the user pressed OK, False if they canceled/closed.
     """
     dialog = GimpUi.ProcedureDialog.new(procedure, config, "Detect Text & Bubbles")
@@ -25,7 +25,7 @@ def show_detect_dialog(procedure, config):
     header_box.set_margin_end(12)
     
     title_label = Gtk.Label()
-    title_label.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Koharu Text &amp; Bubble Detector</span>")
+    title_label.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Text &amp; Bubble Detector</span>")
     title_label.set_xalign(0.0)
     header_box.pack_start(title_label, False, False, 0)
     

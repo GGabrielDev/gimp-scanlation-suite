@@ -4,6 +4,7 @@ import json
 import base64
 import io
 import numpy as np
+import time
 from PIL import Image
 
 from server.core.config import MODELS_CONFIG
@@ -122,6 +123,7 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
     """
     Generator yielding newline-separated JSON progress strings, ending with inpainted base64.
     """
+    total_start = time.time()
     try:
         yield json.dumps({"type": "progress", "percentage": 0.0, "message": "Loading inpainting model..."}) + "\n"
         
@@ -149,6 +151,9 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
         
         # Get bounding boxes from options (passed by client)
         bounding_boxes = options.get("bounding_boxes", [])
+
+        sys.stderr.write(f"[Server Inpaint Service] Decoded image ({full_w}x{full_h}) and mask. Found {len(bounding_boxes)} regions.\n")
+
 
         if not bounding_boxes:
             # Fallback to single bounding box covering all white pixels of mask
@@ -231,6 +236,7 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
                 w = xmax - xmin
                 h = ymax - ymin
                 if w <= 0 or h <= 0:
+                    sys.stderr.write(f"[Server Inpaint Service] Region {idx+1}/{len(bounding_boxes)}: Skipped due to invalid dimensions ({w}x{h})\n")
                     continue
                     
                 # Centered square with a dynamic context window
@@ -252,17 +258,25 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
                 crop_w = x1_clipped - x0_clipped
                 crop_h = y1_clipped - y0_clipped
                 if crop_w <= 0 or crop_h <= 0:
+                    sys.stderr.write(f"[Server Inpaint Service] Region {idx+1}/{len(bounding_boxes)}: Skipped (Clipped size <= 0)\n")
                     continue
                     
+                sys.stderr.write(f"[Server Inpaint Service] Region {idx+1}/{len(bounding_boxes)}: Original Box=[{xmin}, {ymin}, {xmax}, {ymax}] (Size={w}x{h}) | Dynamic Side={side}px | Crop Box=[{x0_clipped}, {y0_clipped}, {x1_clipped}, {y1_clipped}] (Actual Size={crop_w}x{crop_h})\n")
+                
                 crop_img = img_np[y0_clipped:y1_clipped, x0_clipped:x1_clipped]
+
                 crop_mask = mask_np[y0_clipped:y1_clipped, x0_clipped:x1_clipped]
                 
                 # Resize to 512x512
                 crop_img_pil = Image.fromarray(crop_img).resize((512, 512), Image.Resampling.BILINEAR)
                 crop_mask_pil = Image.fromarray(crop_mask).resize((512, 512), Image.Resampling.NEAREST)
                 
+                import time
+                inf_start = time.time()
+                
                 if is_diffusion:
                     import torch
+
                     # Create generator for reproducibility
                     generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(42)
                     
@@ -317,7 +331,11 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
                     out_crop_pil = Image.fromarray(out_crop).resize((crop_w, crop_h), Image.Resampling.BILINEAR)
                     out_crop_original = np.array(out_crop_pil)
                 
+                elapsed = time.time() - inf_start
+                sys.stderr.write(f"[Server Inpaint Service] Region {idx+1}/{len(bounding_boxes)}: Inference completed in {elapsed:.2f} seconds\n")
+                
                 # Blend using the original crop mask
+
                 mask_area = (crop_mask > 0)[:, :, np.newaxis]
                 out_img_np[y0_clipped:y1_clipped, x0_clipped:x1_clipped] = np.where(
                     mask_area,
@@ -332,6 +350,9 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
         buf = io.BytesIO()
         out_pil.save(buf, format="PNG")
         out_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        
+        total_elapsed = time.time() - total_start
+        sys.stderr.write(f"[Server Inpaint Service] Completed inpainting of {len(bounding_boxes)} regions in {total_elapsed:.2f} seconds (avg {total_elapsed/len(bounding_boxes) if bounding_boxes else 0:.2f}s per region).\n")
         
         yield json.dumps({"type": "progress", "percentage": 1.0, "message": "Done."}) + "\n"
         yield json.dumps({"type": "result", "results": [out_b64]}) + "\n"

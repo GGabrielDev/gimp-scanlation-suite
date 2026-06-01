@@ -14,7 +14,7 @@ from gi.repository import GLib
 
 def show_ocr_dialog(procedure, config, image, bounding_boxes):
     """
-    Builds and displays the interactive Koharu Manga OCR dialog.
+    Builds and displays the interactive Manga OCR dialog.
     Returns:
         list of selected indices, or None if the dialog was canceled.
     """
@@ -41,7 +41,7 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
     header_box.set_margin_end(12)
     
     title_label = Gtk.Label()
-    title_label.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Koharu Manga OCR Engine</span>")
+    title_label.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Manga OCR Engine</span>")
     title_label.set_xalign(0.0)
     header_box.pack_start(title_label, False, False, 0)
     
@@ -194,7 +194,7 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
                 )
                 Gimp.displays_flush()
             except Exception as select_err:
-                sys.stderr.write(f"[Koharu OCR] Failed to select region: {select_err}\n")
+                sys.stderr.write(f"[Scanlation OCR] Failed to select region: {select_err}\n")
         
         btn_focus.connect("clicked", on_focus_clicked)
         row_hbox.pack_start(btn_focus, False, False, 0)
@@ -413,6 +413,6 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
         return None
 
     selected_indices = [i for i, chk in enumerate(checkboxes) if chk.get_active()]
-    sys.stderr.write(f"[Koharu OCR] Dialog closed. Checkbox states: {[chk.get_active() for chk in checkboxes]}\n")
-    sys.stderr.write(f"[Koharu OCR] Selected indices returned: {selected_indices}\n")
+    sys.stderr.write(f"[Scanlation OCR] Dialog closed. Checkbox states: {[chk.get_active() for chk in checkboxes]}\n")
+    sys.stderr.write(f"[Scanlation OCR] Selected indices returned: {selected_indices}\n")
     return selected_indices

@@ -98,7 +98,7 @@ def _run_model_on_image(session, input_name, img_np, confidence_threshold, nms_t
         # Implement defensive tensor slicing and dynamic logging of outputs[0] shape
         output0 = outputs[0]
         shape = getattr(output0, "shape", None)
-        sys.stderr.write(f"[Koharu Scouter] outputs[0] shape={shape}\n")
+        sys.stderr.write(f"[Scanlation Scouter] outputs[0] shape={shape}\n")
 
         if shape is not None and len(shape) == 3 and shape[0] == 1:
             if shape[2] == 6:
@@ -161,7 +161,7 @@ def detect_text_bubbles(layer, model_path, confidence_threshold=0.22, nms_thresh
     img_np = preprocessor.to_grayscale(img_np)
 
     if not model_path or not os.path.exists(model_path):
-        sys.stderr.write(f"[Koharu Scouter] Model path '{model_path}' not found.\n")
+        sys.stderr.write(f"[Scanlation Scouter] Model path '{model_path}' not found.\n")
         return []
 
     # Enforce CPU Execution Provider
@@ -240,7 +240,7 @@ def detect_text_bubbles(layer, model_path, confidence_threshold=0.22, nms_thresh
     # Final NMS merging
     keep = postprocessor.nms(boxes, confidences, nms_threshold)
     sys.stderr.write(
-        f"[Koharu Scouter] merged_boxes={len(boxes)} kept_after_nms={len(keep)} "
+        f"[Scanlation Scouter] merged_boxes={len(boxes)} kept_after_nms={len(keep)} "
         f"nms_threshold={nms_threshold:.2f}\n"
     )
     final_boxes = boxes[keep]

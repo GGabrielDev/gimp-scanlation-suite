@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import requests
+import time
 
 from server.core.config import MODELS_CONFIG
 from server.services.model_loader import get_or_load_model, unload_model
@@ -10,6 +11,7 @@ def run_translate_generator(model: str, batch_payload: list, options: dict):
     """
     Generator yielding newline-separated JSON progress strings, ending with translate result payload.
     """
+    start_time = time.time()
     try:
         yield json.dumps({"type": "progress", "percentage": 0.0, "message": "Loading translation model..."}) + "\n"
         model_cfg = MODELS_CONFIG[model]
@@ -25,6 +27,15 @@ def run_translate_generator(model: str, batch_payload: list, options: dict):
         
         # Payload is a list of dialogue blocks
         dialogues = batch_payload
+        
+        # Calculate character and block statistics
+        block_count = len(dialogues)
+        total_chars = sum(len(str(item.get("text", ""))) for item in dialogues)
+        sys.stderr.write(
+            f"[Server Translate Service] Received translation request | Model: {model} | "
+            f"Source Lang: {src_lang} -> Target Lang: {tgt_lang} | "
+            f"Blocks: {block_count} | Total Input Chars: {total_chars}\n"
+        )
         
         # Construct the prompt
         system_prompt = (
@@ -93,15 +104,21 @@ def run_translate_generator(model: str, batch_payload: list, options: dict):
                 payload["thinking"] = {"type": "disabled"}
                 payload["temperature"] = 0.2
             
+            api_start_time = time.time()
             response = requests.post(url, json=payload, headers=headers, timeout=60.0)
             response.raise_for_status()
             res_json = response.json()
+            api_elapsed = time.time() - api_start_time
             
             reasoning = res_json["choices"][0]["message"].get("reasoning_content", "")
             if reasoning:
                 sys.stderr.write(f"\n[Server Translate Service] DeepSeek Translation Reasoning:\n---\n{reasoning}\n---\n")
 
             text_final = res_json["choices"][0]["message"]["content"]
+            sys.stderr.write(
+                f"[Server Translate Service] DeepSeek API translation completed in {api_elapsed:.2f} seconds | "
+                f"Response Length: {len(text_final)} characters\n"
+            )
         else:
             # Local LLM completion
             llm = get_or_load_model(model)
@@ -111,8 +128,14 @@ def run_translate_generator(model: str, batch_payload: list, options: dict):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
+            local_start = time.time()
             response = llm.create_chat_completion(messages=messages)
+            local_elapsed = time.time() - local_start
             text_final = response["choices"][0]["message"]["content"]
+            sys.stderr.write(
+                f"[Server Translate Service] Local LLM ({model}) translation completed in {local_elapsed:.2f} seconds | "
+                f"Response Length: {len(text_final)} characters\n"
+            )
         
         # Clean up response to get only JSON (some LLMs might wrap in ```json ... ```)
         text_clean = text_final.strip()
@@ -143,6 +166,17 @@ def run_translate_generator(model: str, batch_payload: list, options: dict):
         for item in dialogues:
             idx = item.get("index")
             results.append(trans_dict.get(idx, ""))
+        
+        total_elapsed = time.time() - start_time
+        sys.stderr.write(f"[Server Translate Service] Translation processing completed in {total_elapsed:.2f} seconds.\n")
+        sys.stderr.write(f"[Server Translate Service] --- Translation Results ---\n")
+        for item, res in zip(dialogues, results):
+            idx = item.get("index")
+            speaker = item.get("speaker") or "Unknown"
+            src_text = item.get("text", "").replace("\n", " ")
+            res_text = res.replace("\n", " ")
+            sys.stderr.write(f"  Block {idx} | Speaker: {speaker} | Source: '{src_text}' -> Translated: '{res_text}'\n")
+        sys.stderr.write(f"[Server Translate Service] ---------------------------\n")
         
         yield json.dumps({"type": "progress", "percentage": 1.0, "message": "Done."}) + "\n"
         yield json.dumps({"type": "result", "results": results}) + "\n"

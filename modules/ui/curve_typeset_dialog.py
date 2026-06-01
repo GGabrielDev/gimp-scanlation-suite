@@ -10,7 +10,7 @@ from gi.repository import GLib
 
 def show_curve_typeset_dialog(procedure, config, image):
     """
-    Builds and displays the interactive Koharu Curved Text Typesetter dialog.
+    Builds and displays the interactive Curved Text Typesetter dialog.
     Returns True if user presses OK, False if they cancel.
     """
     dialog = GimpUi.ProcedureDialog.new(procedure, config, "Typeset Curved Text")
@@ -24,7 +24,7 @@ def show_curve_typeset_dialog(procedure, config, image):
     header_box.set_margin_end(12)
 
     title_label = Gtk.Label()
-    title_label.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Koharu Curved Text Typesetter</span>")
+    title_label.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Curved Text Typesetter</span>")
     title_label.set_xalign(0.0)
     header_box.pack_start(title_label, False, False, 0)
 

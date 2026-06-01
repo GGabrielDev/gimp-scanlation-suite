@@ -5,6 +5,7 @@ import base64
 import io
 import re
 import requests
+import time
 from PIL import Image
 
 from server.core.config import MODELS_CONFIG
@@ -117,6 +118,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
     target_lang = options.get("target_language")
     source_lang = options.get("source_language") or "Japanese"
     material_type = options.get("material_type") or "manga"
+    total_start = time.time()
 
     if MODELS_CONFIG.get(model, {}).get("handler_class") == "DeepSeekAPI":
         raw_ocr_model_id = "manga_ocr" if source_lang.lower() == "japanese" else "PaddleOCR_Manga"
@@ -157,6 +159,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
         if MODELS_CONFIG.get(model, {}).get("handler_class") == "DeepSeekAPI":
             # 1. Run local raw OCR on all items sequentially (safest for CPU/GPU)
             raw_texts = []
+            pass1_start = time.time()
             for idx, item in enumerate(batch_payload):
                 yield json.dumps({
                     "type": "progress",
@@ -173,6 +176,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                     img_str = f"data:image/png;base64,{img_str}"
 
                 try:
+                    crop_start = time.time()
                     header, data = img_str.split(",", 1)
                     pil_img = Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
                     
@@ -196,11 +200,15 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                         response = raw_ocr_model.create_chat_completion(messages=messages)
                         text_raw = response["choices"][0]["message"]["content"].strip()
                     
-                    sys.stderr.write(f"[Server OCR Service] DeepSeek Pipeline - Raw OCR text: '{text_raw}'\n")
+                    crop_elapsed = time.time() - crop_start
+                    sys.stderr.write(f"[Server OCR Service] Raw OCR Crop {idx+1}/{N} ({raw_ocr_model_id}) completed in {crop_elapsed:.2f} seconds | Raw text: '{text_raw}'\n")
                     raw_texts.append(text_raw)
                 except Exception as raw_err:
                     sys.stderr.write(f"[Server OCR Service] Raw OCR failed on crop {idx}: {raw_err}\n")
                     raw_texts.append("")
+            
+            pass1_elapsed = time.time() - pass1_start
+            sys.stderr.write(f"[Server OCR Service] DeepSeek Pipeline - Pass 1 (Raw OCR extraction) completed in {pass1_elapsed:.2f} seconds (avg {pass1_elapsed/N:.2f}s per crop).\n")
 
             # 2. Run DeepSeek API correction concurrently
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -275,6 +283,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                         payload["thinking"] = {"type": "disabled"}
                         payload["temperature"] = 0.2
 
+                    corr_start = time.time()
                     response = requests.post(url, json=payload, headers=headers, timeout=120.0)
                     response.raise_for_status()
                     res_json = response.json()
@@ -285,7 +294,8 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
 
                     corrected_text = res_json["choices"][0]["message"]["content"].strip()
                     corrected_text = corrected_text.strip().strip('"\'')
-                    sys.stderr.write(f"[Server OCR Service] DeepSeek Pipeline - Corrected text: '{corrected_text}'\n")
+                    corr_elapsed = time.time() - corr_start
+                    sys.stderr.write(f"[Server OCR Service] DeepSeek Correction for Crop {idx+1} completed in {corr_elapsed:.2f} seconds | Corrected text: '{corrected_text}'\n")
                     return idx, corrected_text
                 except Exception as ocr_err:
                     sys.stderr.write(f"[Server OCR Service] Error during DeepSeek OCR pipeline on item {idx}: {ocr_err}\n")
@@ -298,6 +308,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
             }) + "\n"
 
             corrected_results = [None] * N
+            pass2_start = time.time()
             with ThreadPoolExecutor(max_workers=min(10, N)) as executor:
                 futures = []
                 for idx, text_raw in enumerate(raw_texts):
@@ -315,6 +326,8 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                         "message": f"Correcting OCR outputs with DeepSeek {completed}/{N}..."
                     }) + "\n"
 
+            pass2_elapsed = time.time() - pass2_start
+            sys.stderr.write(f"[Server OCR Service] DeepSeek Pipeline - Pass 2 (DeepSeek API correction) completed in {pass2_elapsed:.2f} seconds.\n")
             results = [r if r is not None else "" for r in corrected_results]
 
         else:
@@ -366,6 +379,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                     ]
 
                 try:
+                    crop_start = time.time()
                     try:
                         response = llm.create_chat_completion(messages=messages)
                     except Exception as inf_err:
@@ -378,11 +392,15 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                             raise inf_err
 
                     text = response["choices"][0]["message"]["content"]
+                    crop_elapsed = time.time() - crop_start
+                    sys.stderr.write(f"[Server OCR Service] Crop {idx+1}/{N} ({model}) completed in {crop_elapsed:.2f} seconds | Transcribed: '{text.strip()}'\n")
                     results.append(text.strip())
                 except Exception as e:
                     sys.stderr.write(f"[Server OCR Service] Error during OCR inference on item {idx}: {e}\n")
                     results.append("")
 
+        total_elapsed = time.time() - total_start
+        sys.stderr.write(f"[Server OCR Service] Completed OCR batch of {N} crops in {total_elapsed:.2f} seconds (avg {total_elapsed/N if N > 0 else 0:.2f}s per crop).\n")
         yield json.dumps({
             "type": "progress",
             "percentage": 1.0,
@@ -399,6 +417,7 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
     """
     Generator yielding consensus (ensemble) OCR operations.
     """
+    total_start = time.time()
     source_lang = options.get("source_language") or "Japanese"
     if source_lang not in ["Japanese", "English"]:
         source_lang = "Japanese"
@@ -426,7 +445,7 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
         crops_base64.append(img_str)
 
     crops_base64 = [preprocess_for_ocr(crop) if crop else "" for crop in crops_base64]
-    sys.stderr.write(f"[Server OCR Service] Starting Ensemble OCR Consensus on {len(crops_base64)} crops...\n")
+    sys.stderr.write(f"[Server OCR Service] Starting Ensemble OCR Consensus on {len(crops_base64)} crops | Expert B: {expert_b_model_id} | Arbiter: {arbiter_model_id} | Lang: {source_lang}...\n")
 
     enable_thinking = options.get("enable_thinking", False)
     N = len(crops_base64)
@@ -437,6 +456,7 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
 
     # --- PASS 1: manga-ocr (PyTorch) ---
     results_a = []
+    pass1_start = time.time()
     try:
         yield json.dumps({
             "type": "progress",
@@ -456,18 +476,25 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
                 results_a.append("")
                 continue
             try:
+                crop_start = time.time()
                 header, data = img_b64.split(",", 1)
                 pil_img = Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
                 text_a = mocr(pil_img)
-                results_a.append(text_a.strip() if text_a else "")
+                crop_elapsed = time.time() - crop_start
+                val_a = text_a.strip() if text_a else ""
+                sys.stderr.write(f"[Server OCR Service] Pass 1 (manga-ocr) Crop {idx+1}/{N} completed in {crop_elapsed:.2f} seconds | Raw text: '{val_a}'\n")
+                results_a.append(val_a)
             except Exception as ex_a:
                 sys.stderr.write(f"[Server OCR Service] Expert A (manga-ocr) error on crop {idx}: {ex_a}\n")
                 results_a.append("")
     finally:
         unload_model("manga_ocr")
+    pass1_elapsed = time.time() - pass1_start
+    sys.stderr.write(f"[Server OCR Service] Pass 1 (manga-ocr) completed in {pass1_elapsed:.2f} seconds (avg {pass1_elapsed/N if N > 0 else 0:.2f}s per crop).\n")
 
     # --- PASS 2: Expert B ---
     results_b = []
+    pass2_start = time.time()
     is_vision_model = MODELS_CONFIG.get(expert_b_model_id, {}).get("handler_class") not in ["TextOnly", "DeepSeekAPI"]
     if not is_vision_model:
         expert_b_model_id = "PaddleOCR_Manga"
@@ -490,6 +517,7 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
                 results_b.append("")
                 continue
             try:
+                crop_start = time.time()
                 expert_b.reset()
                 messages = [
                     {
@@ -516,16 +544,22 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
                         raise inf_err
 
                 text_b = response["choices"][0]["message"]["content"]
-                results_b.append(text_b.strip() if text_b else "")
+                crop_elapsed = time.time() - crop_start
+                val_b = text_b.strip() if text_b else ""
+                sys.stderr.write(f"[Server OCR Service] Pass 2 ({expert_b_model_id}) Crop {idx+1}/{N} completed in {crop_elapsed:.2f} seconds | Raw text: '{val_b}'\n")
+                results_b.append(val_b)
             except Exception as ex_b:
                 sys.stderr.write(f"[Server OCR Service] Expert B ({expert_b_model_id}) error on crop {idx}: {ex_b}\n")
                 results_b.append("")
     finally:
         if expert_b_model_id != arbiter_model_id:
             unload_model(expert_b_model_id)
+    pass2_elapsed = time.time() - pass2_start
+    sys.stderr.write(f"[Server OCR Service] Pass 2 ({expert_b_model_id}) completed in {pass2_elapsed:.2f} seconds (avg {pass2_elapsed/N if N > 0 else 0:.2f}s per crop).\n")
 
     # --- PASS 3: Arbiter VLM Consensus ---
     final_results = []
+    pass3_start = time.time()
     try:
         yield json.dumps({
             "type": "progress",
@@ -603,6 +637,7 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
                         payload["thinking"] = {"type": "disabled"}
                         payload["temperature"] = 0.2
 
+                    crop_start = time.time()
                     response = requests.post(url, json=payload, headers=headers, timeout=120.0)
                     response.raise_for_status()
                     res_json = response.json()
@@ -614,6 +649,8 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
                     if enable_thinking_item and reasoning:
                         thinking = reasoning
                     
+                    crop_elapsed = time.time() - crop_start
+                    sys.stderr.write(f"[Server OCR Service] Pass 3 Arbiter (DeepSeek) Crop {idx+1} completed in {crop_elapsed:.2f} seconds | Expert A: '{result_a}' | Expert B: '{result_b}' -> Consensus: '{transcription}'\n")
                     return idx, transcription, thinking
                 except Exception as ex_c:
                     sys.stderr.write(f"[Server OCR Service] Arbiter consensus error on crop {idx}: {ex_c}\n")
@@ -649,7 +686,6 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
                     
                     if thinking:
                         sys.stderr.write(f"\n[Server OCR Service] Crop {idx} Thinking:\n---\n{thinking}\n---\n")
-                    sys.stderr.write(f"[Server OCR Service] Ensemble crop {idx} final: '{results_a[idx]}' / '{results_b[idx]}' -> '{transcription}'\n")
                     
                     completed += 1
                     pct = (2 * N + completed) / (3 * N) if N > 0 else 1.0
@@ -747,6 +783,7 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
                             }
                         ]
 
+                    crop_start = time.time()
                     try:
                         response = arbiter.create_chat_completion(messages=messages, temperature=0.2, max_tokens=2048)
                     except Exception as inf_err:
@@ -765,8 +802,9 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
                     if thinking:
                         sys.stderr.write(f"\n[Server OCR Service] Crop {idx} Thinking:\n---\n{thinking}\n---\n")
                         
+                    crop_elapsed = time.time() - crop_start
+                    sys.stderr.write(f"[Server OCR Service] Pass 3 Arbiter ({arbiter_model_id}) Crop {idx+1}/{N} completed in {crop_elapsed:.2f} seconds | Expert A: '{result_a}' | Expert B: '{result_b}' -> Consensus: '{transcription}'\n")
                     final_results.append(transcription)
-                    sys.stderr.write(f"[Server OCR Service] Ensemble crop {idx} final: '{result_a}' / '{result_b}' -> '{transcription}'\n")
                 except Exception as ex_c:
                     sys.stderr.write(f"[Server OCR Service] Arbiter consensus error on crop {idx}: {ex_c}\n")
                     final_results.append(result_a or result_b or "")
@@ -774,6 +812,24 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
     finally:
         if arbiter_model_id != "DeepSeek":
             unload_model(arbiter_model_id)
+    pass3_elapsed = time.time() - pass3_start
+    sys.stderr.write(f"[Server OCR Service] Pass 3 (Arbiter Consensus) completed in {pass3_elapsed:.2f} seconds (avg {pass3_elapsed/N if N > 0 else 0:.2f}s per crop).\n")
+
+    total_elapsed = time.time() - total_start
+    sys.stderr.write(f"[Server OCR Service] Completed Ensemble OCR Consensus in {total_elapsed:.2f} seconds total.\n")
+    
+    sys.stderr.write(f"\n[Server OCR Service] ==========================================\n")
+    sys.stderr.write(f"[Server OCR Service]           ENSEMBLE CONSENSUS REPORT       \n")
+    sys.stderr.write(f"[Server OCR Service] ==========================================\n")
+    for idx in range(N):
+        sys.stderr.write(
+            f"[Server OCR Service] Crop {idx+1}/{N}:\n"
+            f"  - Expert A (manga-ocr): '{results_a[idx]}'\n"
+            f"  - Expert B ({expert_b_model_id}): '{results_b[idx]}'\n"
+            f"  - Consensus ({arbiter_model_id}): '{final_results[idx]}'\n"
+            f"--------------------------------------------------\n"
+        )
+    sys.stderr.write(f"[Server OCR Service] ==========================================\n\n")
 
     yield json.dumps({
         "type": "progress",

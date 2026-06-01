@@ -22,7 +22,7 @@ if venv_paths:
 from server.core.config import MODELS_CONFIG, BatchRequest
 from server.routes import ocr, inpaint, translate, detect
 
-app = FastAPI(title="Koharu Universal Remote Dispatch Server")
+app = FastAPI(title="GIMP Scanlation Suite Remote Dispatch Server")
 
 # Include the modular sub-routers
 app.include_router(ocr.router, prefix="/api/v1")

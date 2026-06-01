@@ -54,7 +54,7 @@ def run_translate_processing(procedure, image, bounding_boxes, payload, included
             
         translated_results = res_list
     except Exception as trans_err:
-        sys.stderr.write(f"[Koharu Translator] Translation failed: {trans_err}\n")
+        sys.stderr.write(f"[Scanlation Translator] Translation failed: {trans_err}\n")
         Gimp.message(f"Translation failed: {trans_err}")
         return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -73,7 +73,7 @@ def run_translate_processing(procedure, image, bounding_boxes, payload, included
         else:
             group_layer = None
     except Exception as group_err:
-        sys.stderr.write(f"[Koharu Translator] Failed to create layer group: {group_err}\n")
+        sys.stderr.write(f"[Scanlation Translator] Failed to create layer group: {group_err}\n")
         group_layer = None
 
     default_font = None
@@ -108,7 +108,7 @@ def run_translate_processing(procedure, image, bounding_boxes, payload, included
                 
                 text_layer.set_offsets(int(tx), int(ty))
         except Exception as render_err:
-            sys.stderr.write(f"[Koharu Translator] Failed to render bubble {box_idx+1}: {render_err}\n")
+            sys.stderr.write(f"[Scanlation Translator] Failed to render bubble {box_idx+1}: {render_err}\n")
 
     # Display completed GIMP message
     Gimp.message(f"Translation complete! Saved {len(translated_results)} translated layers in the 'Translated Text' layer group. You can now style and position them using standard GIMP text tools.")

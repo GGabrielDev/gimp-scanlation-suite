@@ -1,4 +1,4 @@
-# Koharu Universal Remote Dispatch Server
+# GIMP Scanlation Suite Remote Dispatch Server
 
 This directory contains the remote dispatcher server for offloading heavy Vision-Language Model (VLM) OCR processing from GIMP.
 

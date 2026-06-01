@@ -1,4 +1,4 @@
-# GIMP Scanlation Suite (Koharu Project)
+# GIMP Scanlation Suite
 
 An agentic, AI-powered scanlation toolkit for GIMP 3.0. It automates speech bubble detection, text recognition (OCR), background inpainting/erasure, and contextual translations.
 

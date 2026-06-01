@@ -1,1 +1,1 @@
-# Koharu Scanlation Daemon Services Package
+# GIMP Scanlation Daemon Services Package

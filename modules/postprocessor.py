@@ -78,7 +78,7 @@ def postprocess_boxes(preds, confidence_threshold, image_size, orig_w, orig_h, r
     valid_confs = confidences[mask]
 
     sys.stderr.write(
-        f"[Koharu Postprocessor] tile=({x_offset},{y_offset},{orig_w},{orig_h}) "
+        f"[Scanlation Postprocessor] tile=({x_offset},{y_offset},{orig_w},{orig_h}) "
         f"total_preds={len(preds)} valid_preds={len(valid_preds)} threshold={confidence_threshold:.2f}\n"
     )
 
@@ -143,10 +143,10 @@ def postprocess_rtdetr_outputs(boxes_val, scores_val, labels_val, confidence_thr
 
     if labels is not None:
         valid_labels = labels[mask]
-        sys.stderr.write(f"[Koharu Postprocessor] RT-DETR filtered classes: {valid_labels.tolist()}\n")
+        sys.stderr.write(f"[Scanlation Postprocessor] RT-DETR filtered classes: {valid_labels.tolist()}\n")
 
     sys.stderr.write(
-        f"[Koharu Postprocessor] RT-DETR tile=({x_offset},{y_offset}) "
+        f"[Scanlation Postprocessor] RT-DETR tile=({x_offset},{y_offset}) "
         f"total_preds={len(boxes)} valid_preds={len(valid_boxes)} threshold={confidence_threshold:.2f}\n"
     )
 

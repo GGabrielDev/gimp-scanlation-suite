@@ -14,7 +14,7 @@ from gi.repository import Gtk
 try:
     from modules import ocr_engine
 except ImportError as e:
-    sys.stderr.write(f"[Koharu Suite] Failed to import ocr_engine: {e}\n")
+    sys.stderr.write(f"[Scanlation Suite] Failed to import ocr_engine: {e}\n")
     ocr_engine = None
 
 try:
@@ -59,7 +59,7 @@ def load_context_cache():
             with open(cache_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            sys.stderr.write(f"[Koharu OCR] Failed to load context cache: {e}\n")
+            sys.stderr.write(f"[Scanlation OCR] Failed to load context cache: {e}\n")
     return {}
 
 def save_context_cache(cache):
@@ -72,7 +72,7 @@ def save_context_cache(cache):
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(cache, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        sys.stderr.write(f"[Koharu OCR] Failed to save context cache: {e}\n")
+        sys.stderr.write(f"[Scanlation OCR] Failed to save context cache: {e}\n")
 
 def find_cached_hint(cache, image_key, xmin, ymin, xmax, ymax):
     if image_key not in cache:
@@ -134,7 +134,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
         projector_path = os.path.join(models_dir, "PaddleOCR-VL-1.5-mmproj.gguf")
         
         if not os.path.exists(gguf_path) or not os.path.exists(projector_path):
-            Gimp.message("[Koharu OCR] OCR model weights not found locally. Downloading PaddleOCR-VL-1.5 GGUF and vision projector (approx. 180MB total). This may take a moment...")
+            Gimp.message("[Scanlation OCR] OCR model weights not found locally. Downloading PaddleOCR-VL-1.5 GGUF and vision projector (approx. 180MB total). This may take a moment...")
             while GLib.MainContext.default().iteration(False):
                 pass
 
@@ -195,11 +195,11 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
         while GLib.MainContext.default().iteration(False):
             pass
 
-        sys.stderr.write(f"[Koharu OCR] Fetching active layer pixel buffer ({full_w}x{full_h})...\n")
+        sys.stderr.write(f"[Scanlation OCR] Fetching active layer pixel buffer ({full_w}x{full_h})...\n")
         raw_data = buffer.get(rect, 1.0, "RGB u8", Gegl.AbyssPolicy.NONE)
         img_np = np.frombuffer(raw_data, dtype=np.uint8).reshape((full_h, full_w, 3))
     except Exception as e:
-        sys.stderr.write(f"[Koharu OCR] Failed to read layer pixels: {e}\n")
+        sys.stderr.write(f"[Scanlation OCR] Failed to read layer pixels: {e}\n")
         Gimp.message("Failed to read active layer pixels.")
         return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -207,7 +207,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
     while GLib.MainContext.default().iteration(False):
         pass
 
-    sys.stderr.write(f"[Koharu OCR] run_ocr_processing called with {len(bounding_boxes)} bounding boxes.\n")
+    sys.stderr.write(f"[Scanlation OCR] run_ocr_processing called with {len(bounding_boxes)} bounding boxes.\n")
 
     # Crop all regions
     crops = []
@@ -221,7 +221,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
         y1 = int(np.clip(ymax - offset_y, 0, full_h))
 
         if x1 <= x0 or y1 <= y0:
-            sys.stderr.write(f"[Koharu OCR] Box {i} ({box}) skipped: empty intersection (x0={x0}, x1={x1}, y0={y0}, y1={y1}, full_w={full_w}, full_h={full_h}, offset_x={offset_x}, offset_y={offset_y})\n")
+            sys.stderr.write(f"[Scanlation OCR] Box {i} ({box}) skipped: empty intersection (x0={x0}, x1={x1}, y0={y0}, y1={y1}, full_w={full_w}, full_h={full_h}, offset_x={offset_x}, offset_y={offset_y})\n")
             continue
 
         crops.append(img_np[y0:y1, x0:x1, :])
@@ -394,7 +394,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
         # Run local inference sequentially
         for i, crop in enumerate(crops):
             box = valid_boxes[i]
-            sys.stderr.write(f"[Koharu OCR] Performing local OCR on region {i+1}/{len(crops)}...\n")
+            sys.stderr.write(f"[Scanlation OCR] Performing local OCR on region {i+1}/{len(crops)}...\n")
             while GLib.MainContext.default().iteration(False):
                 pass
                 
@@ -403,9 +403,9 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
                 raw_text = res_list[0] if res_list else ""
                 normalized_text = clean_and_normalize_text(raw_text, half_to_full=half_to_full)
                 ocr_results.append(normalized_text)
-                sys.stderr.write(f"[Koharu OCR] Region {i} bounding box {box} -> '{normalized_text}'\n")
+                sys.stderr.write(f"[Scanlation OCR] Region {i} bounding box {box} -> '{normalized_text}'\n")
             except Exception as ocr_err:
-                sys.stderr.write(f"[Koharu OCR] Local inference error on region {i}: {ocr_err}\n")
+                sys.stderr.write(f"[Scanlation OCR] Local inference error on region {i}: {ocr_err}\n")
                 ocr_results.append("")
             
             while GLib.MainContext.default().iteration(False):
@@ -419,7 +419,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
         import threading
         
         # Serialize crops to base64 PNGs
-        sys.stderr.write("[Koharu OCR] Serializing crops to base64 PNGs...\n")
+        sys.stderr.write("[Scanlation OCR] Serializing crops to base64 PNGs...\n")
         batch_payload = []
         for idx, crop in enumerate(crops):
             pil_img = Image.fromarray(crop)
@@ -469,7 +469,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
             except Exception as ex:
                 error_container.append(ex)
 
-        sys.stderr.write(f"[Koharu OCR] Sending {len(crops)} crops to remote dispatcher at {api_url}...\n")
+        sys.stderr.write(f"[Scanlation OCR] Sending {len(crops)} crops to remote dispatcher at {api_url}...\n")
         Gimp.progress_init("Initializing consensus OCR...")
         
         t = threading.Thread(target=worker)
@@ -485,7 +485,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
         Gimp.progress_end()
 
         if error_container:
-            sys.stderr.write(f"[Koharu OCR] Remote dispatch failed: {error_container[0]}\n")
+            sys.stderr.write(f"[Scanlation OCR] Remote dispatch failed: {error_container[0]}\n")
             Gimp.message(f"Remote OCR failed: {error_container[0]}")
             return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -495,7 +495,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
                 box = valid_boxes[i]
                 normalized_text = clean_and_normalize_text(raw_text, half_to_full=half_to_full)
                 ocr_results.append(normalized_text)
-                sys.stderr.write(f"[Koharu OCR] Region {i} bounding box {box} -> '{normalized_text}'\n")
+                sys.stderr.write(f"[Scanlation OCR] Region {i} bounding box {box} -> '{normalized_text}'\n")
 
     # Create GIMP text layers for the recognized text blocks
     try:
@@ -515,7 +515,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
             else:
                 group_layer = None
     except Exception as group_err:
-        sys.stderr.write(f"[Koharu OCR] Failed to resolve/create layer group: {group_err}\n")
+        sys.stderr.write(f"[Scanlation OCR] Failed to resolve/create layer group: {group_err}\n")
         group_layer = None
 
     # Resolve a valid Gimp.Font object
@@ -535,7 +535,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
             if not font:
                 font = Gimp.Font.get_by_name("Sans-serif")
     except Exception as font_err:
-        sys.stderr.write(f"[Koharu OCR] Failed to resolve font: {font_err}\n")
+        sys.stderr.write(f"[Scanlation OCR] Failed to resolve font: {font_err}\n")
 
     # Insert text layers for each recognized box
     existing_children = []
@@ -547,7 +547,7 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
             else:
                 existing_children = list(existing_children)
         except Exception as e:
-            sys.stderr.write(f"[Koharu OCR] Failed to get children of group layer: {e}\n")
+            sys.stderr.write(f"[Scanlation OCR] Failed to get children of group layer: {e}\n")
 
     for i, text in enumerate(ocr_results):
         if not text.strip():
@@ -562,23 +562,23 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
                 if success:
                     if abs(tx - xmin) <= 5 and abs(ty - ymin) <= 5:
                         try:
-                            sys.stderr.write(f"[Koharu OCR] Overwriting old text layer: '{child.get_name()}' at ({tx}, {ty})\n")
+                            sys.stderr.write(f"[Scanlation OCR] Overwriting old text layer: '{child.get_name()}' at ({tx}, {ty})\n")
                             image.remove_layer(child)
                             existing_children.remove(child)
                         except Exception as rm_err:
-                            sys.stderr.write(f"[Koharu OCR] Failed to remove duplicate child layer: {rm_err}\n")
+                            sys.stderr.write(f"[Scanlation OCR] Failed to remove duplicate child layer: {rm_err}\n")
 
             if font:
                 text_layer = Gimp.TextLayer.new(image, text, font, 32, Gimp.Unit.pixel())
             else:
                 text_layer = None
-                sys.stderr.write(f"[Koharu OCR] Cannot create text layer: no font found.\n")
+                sys.stderr.write(f"[Scanlation OCR] Cannot create text layer: no font found.\n")
 
             if text_layer:
                 text_layer.set_offsets(int(xmin), int(ymin))
                 image.insert_layer(text_layer, group_layer, -1)
         except Exception as layer_err:
-            sys.stderr.write(f"[Koharu OCR] Failed to create text layer for region {i}: {layer_err}\n")
+            sys.stderr.write(f"[Scanlation OCR] Failed to create text layer for region {i}: {layer_err}\n")
 
     # Display summary message
     non_empty = [t for t in ocr_results if t.strip()]

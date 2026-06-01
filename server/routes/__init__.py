@@ -1,1 +1,1 @@
-# Koharu Scanlation Daemon Routes Package
+# GIMP Scanlation Daemon Routes Package

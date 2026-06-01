@@ -11,7 +11,7 @@ from gi.repository import GLib
 
 def show_inpaint_dialog(procedure, config):
     """
-    Builds and displays the interactive Koharu Inpainting Tool dialog.
+    Builds and displays the interactive Inpainting Tool dialog.
     Returns True if user presses OK, False if they cancel.
     """
     dialog = GimpUi.ProcedureDialog.new(procedure, config, "Inpaint / Erase Text")
@@ -38,7 +38,7 @@ def show_inpaint_dialog(procedure, config):
     header_box.set_margin_end(12)
     
     title_label = Gtk.Label()
-    title_label.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Koharu Inpainting Tool</span>")
+    title_label.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Inpainting Tool</span>")
     title_label.set_xalign(0.0)
     header_box.pack_start(title_label, False, False, 0)
     

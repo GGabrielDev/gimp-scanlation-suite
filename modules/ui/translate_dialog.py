@@ -46,7 +46,7 @@ def show_translate_dialog(procedure, config, image, bounding_boxes, bubble_state
     Returns:
         tuple (payload, included_box_indices) if accepted, or None if canceled.
     """
-    dialog = Gtk.Dialog(title="Koharu Translation & Typesetting", parent=None, flags=0)
+    dialog = Gtk.Dialog(title="Translation & Typesetting", parent=None, flags=0)
     dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
     dialog.set_default_size(750, 580)
     
@@ -60,7 +60,7 @@ def show_translate_dialog(procedure, config, image, bounding_boxes, bubble_state
     header_box.set_margin_end(12)
     
     title_label = Gtk.Label()
-    title_label.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Koharu Typesetting &amp; Translation</span>")
+    title_label.set_markup("<span size='large' weight='bold' foreground='#3584e4'>Typesetting &amp; Translation</span>")
     title_label.set_xalign(0.0)
     header_box.pack_start(title_label, False, False, 0)
     

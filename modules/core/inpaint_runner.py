@@ -18,7 +18,7 @@ from gi.repository import Gegl
 try:
     from modules import model_manager
 except Exception as e:
-    sys.stderr.write(f"[Koharu Inpaint] Failed to import model_manager in runner: {e}\n")
+    sys.stderr.write(f"[Scanlation Inpaint] Failed to import model_manager in runner: {e}\n")
     model_manager = None
 
 def run_inpaint_processing(procedure, image, drawables, config):
@@ -31,7 +31,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
     inference_mode = config.get_property("inference-mode") or "Local"
     api_url = config.get_property("api-url") or "http://localhost:7890"
 
-    sys.stderr.write(f"[Koharu Inpaint] Running in {inference_mode} mode using '{inpaint_model}' (dilation={dilation}px)...\n")
+    sys.stderr.write(f"[Scanlation Inpaint] Running in {inference_mode} mode using '{inpaint_model}' (dilation={dilation}px)...\n")
 
     # 1. Verification of active layer
     if not drawables:
@@ -123,7 +123,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
         Gimp.message("Error: No paths/vectors found in the image. Please run detection first.")
         return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
-    sys.stderr.write(f"[Koharu Inpaint] Reading bounding boxes from path: '{target_path.get_name()}'...\n")
+    sys.stderr.write(f"[Scanlation Inpaint] Reading bounding boxes from path: '{target_path.get_name()}'...\n")
 
     # 3. Retrieve strokes and parse coordinates
     bounding_boxes = []
@@ -154,7 +154,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
                     coords = list(res.points)
 
             if not coords:
-                sys.stderr.write(f"[Koharu Inpaint] Skipping stroke {stroke_id}: no coordinates retrieved.\n")
+                sys.stderr.write(f"[Scanlation Inpaint] Skipping stroke {stroke_id}: no coordinates retrieved.\n")
                 continue
 
             x_coords = coords[0::2]
@@ -207,7 +207,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
             
             stroke_anchors.append(anchors)
     except Exception as e:
-        sys.stderr.write(f"[Koharu Inpaint] Failed to parse paths/strokes: {e}\n")
+        sys.stderr.write(f"[Scanlation Inpaint] Failed to parse paths/strokes: {e}\n")
         Gimp.message("Failed to extract coordinates from paths.")
         return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -236,7 +236,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
         models_dir = os.path.join(plugin_dir, "models")
         model_file_path = os.path.join(models_dir, local_filename)
         if not os.path.exists(model_file_path):
-            Gimp.message(f"[Koharu Inpaint] Local model '{inpaint_model}' weights not found. Downloading (approx. 100MB-200MB). This may take a moment...")
+            Gimp.message(f"[Scanlation Inpaint] Local model '{inpaint_model}' weights not found. Downloading (approx. 100MB-200MB). This may take a moment...")
             while GLib.MainContext.default().iteration(False):
                 pass
 
@@ -256,11 +256,11 @@ def run_inpaint_processing(procedure, image, drawables, config):
         while GLib.MainContext.default().iteration(False):
             pass
 
-        sys.stderr.write(f"[Koharu Inpaint] Fetching active layer pixel buffer ({full_w}x{full_h})...\n")
+        sys.stderr.write(f"[Scanlation Inpaint] Fetching active layer pixel buffer ({full_w}x{full_h})...\n")
         raw_data = buffer.get(rect, 1.0, "RGB u8", Gegl.AbyssPolicy.NONE)
         img_np = np.frombuffer(raw_data, dtype=np.uint8).reshape((full_h, full_w, 3))
     except Exception as e:
-        sys.stderr.write(f"[Koharu Inpaint] Failed to read layer pixels: {e}\n")
+        sys.stderr.write(f"[Scanlation Inpaint] Failed to read layer pixels: {e}\n")
         Gimp.message("Failed to read active layer pixels.")
         return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -295,7 +295,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
             mask_pil = mask_pil.filter(ImageFilter.MaxFilter(size=2 * dilation + 1))
             mask_np = np.array(mask_pil)
         except Exception as dil_err:
-            sys.stderr.write(f"[Koharu Inpaint] Mask dilation failed: {dil_err}\n")
+            sys.stderr.write(f"[Scanlation Inpaint] Mask dilation failed: {dil_err}\n")
 
     # 5. Run inference with background thread and event loop pumping
     result_container = []
@@ -456,7 +456,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
             except Exception as ex:
                 error_container.append(ex)
 
-    sys.stderr.write(f"[Koharu Inpaint] Dispatching inpainting thread in background...\n")
+    sys.stderr.write(f"[Scanlation Inpaint] Dispatching inpainting thread in background...\n")
     Gimp.progress_init(f"Inpainting dialogue regions ({inpaint_model})...")
     
     t = threading.Thread(target=worker)
@@ -474,7 +474,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
     # Check results
     if not result_container:
         err_msg = error_container[0] if error_container else "Unknown error occurred during inpainting"
-        sys.stderr.write(f"[Koharu Inpaint] Inference error: {err_msg}\n")
+        sys.stderr.write(f"[Scanlation Inpaint] Inference error: {err_msg}\n")
         Gimp.message(f"Inpainting failed: {err_msg}")
         return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -486,7 +486,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
         copy_layer = active_layer.copy()
         copy_layer.set_name(f"[Inpaint] {active_layer.get_name()}")
     except Exception as copy_err:
-        sys.stderr.write(f"[Koharu Inpaint] Failed to duplicate layer: {copy_err}\n")
+        sys.stderr.write(f"[Scanlation Inpaint] Failed to duplicate layer: {copy_err}\n")
         Gimp.message("Failed to create inpainting layer copy.")
         return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -501,7 +501,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
         except ValueError:
             image.insert_layer(copy_layer, parent, 0)
     except Exception as insert_err:
-        sys.stderr.write(f"[Koharu Inpaint] Failed to insert layer: {insert_err}\n")
+        sys.stderr.write(f"[Scanlation Inpaint] Failed to insert layer: {insert_err}\n")
         try:
             image.insert_layer(copy_layer, None, 0)
         except Exception:
@@ -514,7 +514,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
         copy_rect = copy_buffer.get_extent()
         copy_buffer.set(copy_rect, "RGB u8", final_img.tobytes())
     except Exception as write_err:
-        sys.stderr.write(f"[Koharu Inpaint] Failed to write inpainted buffer: {write_err}\n")
+        sys.stderr.write(f"[Scanlation Inpaint] Failed to write inpainted buffer: {write_err}\n")
         Gimp.message("Failed to write inpainted pixels to the copied layer.")
         return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -522,7 +522,7 @@ def run_inpaint_processing(procedure, image, drawables, config):
     try:
         image.set_selected_drawables([copy_layer])
     except Exception as sel_err:
-        sys.stderr.write(f"[Koharu Inpaint] Failed to set active layer: {sel_err}\n")
+        sys.stderr.write(f"[Scanlation Inpaint] Failed to set active layer: {sel_err}\n")
 
     # Flush display
     try:

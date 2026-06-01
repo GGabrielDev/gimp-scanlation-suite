@@ -1,1 +1,1 @@
-# Koharu GIMP Scanlation Suite Modules Package
+# GIMP Scanlation Suite Modules Package

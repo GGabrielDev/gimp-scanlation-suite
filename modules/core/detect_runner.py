@@ -12,13 +12,13 @@ from gi.repository import GLib
 try:
     from modules import scouter
 except Exception as e:
-    sys.stderr.write(f"[Koharu Detector] Failed to import scouter in runner: {e}\n")
+    sys.stderr.write(f"[Scanlation Detector] Failed to import scouter in runner: {e}\n")
     scouter = None
 
 try:
     from modules import model_manager
 except Exception as e:
-    sys.stderr.write(f"[Koharu Detector] Failed to import model_manager in runner: {e}\n")
+    sys.stderr.write(f"[Scanlation Detector] Failed to import model_manager in runner: {e}\n")
     model_manager = None
 
 def run_detect_processing(procedure, image, drawables, config):
@@ -31,7 +31,7 @@ def run_detect_processing(procedure, image, drawables, config):
     confidence = config.get_property("confidence")
     class_filter = config.get_property("class-filter")
 
-    Gimp.message(f"[Koharu Detector] Running '{detector_model}' with threshold={confidence:.2f}...")
+    Gimp.message(f"[Scanlation Detector] Running '{detector_model}' with threshold={confidence:.2f}...")
 
     # 1. Verification of active layer
     if not drawables:
@@ -62,7 +62,7 @@ def run_detect_processing(procedure, image, drawables, config):
     models_dir = os.path.join(plugin_dir, "models")
     local_path = os.path.join(models_dir, filename)
     if not os.path.exists(local_path):
-        Gimp.message(f"[Koharu Detector] Downloading model '{model_id}/{filename}'... This may take a moment.")
+        Gimp.message(f"[Scanlation Detector] Downloading model '{model_id}/{filename}'... This may take a moment.")
         # Pump events again
         while GLib.MainContext.default().iteration(False):
             pass
@@ -70,7 +70,7 @@ def run_detect_processing(procedure, image, drawables, config):
     try:
         model_path = model_manager.ensure_model_exists(model_id, filename)
     except Exception as e:
-        sys.stderr.write(f"[Koharu Detector] Model acquisition failed: {e}\n")
+        sys.stderr.write(f"[Scanlation Detector] Model acquisition failed: {e}\n")
         Gimp.message(f"Model download failed. Check GIMP error logs.")
         return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -87,7 +87,7 @@ def run_detect_processing(procedure, image, drawables, config):
         boxes = scouter.detect_text_bubbles(active_layer, model_path, confidence_threshold=confidence, class_filter=class_filter)
     except Exception as e:
         # Route all exceptions/debug output to stderr to protect GIMP's wire protocol
-        sys.stderr.write(f"[Koharu Detector] Inference error: {e}\n")
+        sys.stderr.write(f"[Scanlation Detector] Inference error: {e}\n")
         Gimp.message(f"Inference failed. Check GIMP error logs.")
         return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
@@ -132,11 +132,11 @@ def run_detect_processing(procedure, image, drawables, config):
         elif hasattr(image, "add_vectors"):
             image.add_vectors(vectors, -1)
         else:
-            sys.stderr.write("[Koharu Detector] Failed to add path: API unsupported.\n")
+            sys.stderr.write("[Scanlation Detector] Failed to add path: API unsupported.\n")
             
         Gimp.message(f"Successfully generated paths for {len(boxes)} text bubbles.")
     except Exception as e:
-        sys.stderr.write(f"[Koharu Detector] Path creation failed: {e}\n")
+        sys.stderr.write(f"[Scanlation Detector] Path creation failed: {e}\n")
         Gimp.message("Failed to generate path layers.")
         return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 

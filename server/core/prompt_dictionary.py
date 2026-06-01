@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Koharu Scanlation Suite - System Prompt Dictionary
+GIMP Scanlation Suite - System Prompt Dictionary
 Contains specialized VLM instructions tailored to different manga and comic media formats.
 """
 
