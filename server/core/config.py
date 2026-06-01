@@ -167,7 +167,7 @@ MODELS_CONFIG = {
         "n_ctx": 0
     },
     "anime-inpaint": {
-        "repo": "Uminosachi/anime-inpaint",
+        "repo": "Uminosachi/revAnimated_v121Inp-inpainting",
         "file": None,
         "projector_repo": None,
         "projector_file": None,

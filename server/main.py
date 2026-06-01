@@ -1,5 +1,12 @@
 import os
 import sys
+
+# Auto-configure ROCm GFX override for AMD APUs/GPUs (like BC-250 / gfx1013) if not already set.
+# This must run before torch or any GPU/ROCm libraries are imported.
+if "HSA_OVERRIDE_GFX_VERSION" not in os.environ:
+    # gfx1013 (Cyan Skillfish on BC-250) is RDNA-based and runs fine when overridden to 10.3.0 (gfx1030)
+    os.environ["HSA_OVERRIDE_GFX_VERSION"] = "10.3.0"
+
 from fastapi import FastAPI, HTTPException, Query
 
 # Bootstrapping local venv site-packages so we can import llama-cpp and modules

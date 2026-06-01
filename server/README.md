@@ -88,11 +88,38 @@ pip install -r server/requirements.txt
 
 > [!TIP]
 > **AMD GPU PyTorch Acceleration (ROCm)**:
-> The standard `requirements.txt` installation pulls the default PyTorch package, which will execute on the **CPU** by default on AMD systems. Because `manga-ocr` is very small (~300MB), CPU inference is extremely fast and works out of the box.
-> If you explicitly want PyTorch to run with hardware acceleration on your AMD GPU, install the ROCm-enabled PyTorch build:
-> ```bash
-> pip install torch --index-url https://download.pytorch.org/whl/rocm6.0
-> ```
+> The standard `requirements.txt` installation pulls the default PyTorch package, which will execute on the **CPU** by default on AMD systems.
+> If you want PyTorch (and SDXL Inpainting) to run with hardware acceleration on an AMD GPU:
+> 
+> * **Option A: Debian/Ubuntu (Pip-based)**:
+>   1. Install the ROCm-enabled PyTorch build in your virtual environment:
+>      ```bash
+>      pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/rocm6.0
+>      ```
+>      *(Note: Replace `rocm6.0` with your target ROCm version if different, e.g., `rocm6.1`)*
+> 
+> * **Option B: Arch Linux / CachyOS (System-based)**:
+>   If you are running Arch Linux or CachyOS, it is highly recommended to use the optimized system packages:
+>   1. Install the ROCm PyTorch package via `pacman`:
+>      ```bash
+>      sudo pacman -S python-pytorch-opt-rocm
+>      ```
+>      *(Use `python-pytorch-rocm` if you do not want AVX2 optimizations).*
+>   2. Recreate your virtual environment to include system site-packages (or change `include-system-site-packages = true` in `venv/pyvenv.cfg`):
+>      ```bash
+>      python3 -m venv venv --system-site-packages
+>      source venv/bin/activate
+>      pip install -r server/requirements.txt
+>      ```
+>      *(Note: Make sure not to run `pip install torch` inside the venv, as it will overwrite the system's ROCm-enabled version with a CPU-only one).*
+> 
+> * **For Unsupported AMD GPUs (e.g. BC-250 / gfx1013 "Cyan Skillfish")**:
+>   AMD ROCm does not natively support the gfx1013 architecture. You must override the gfx version before running PyTorch to trick it into using compatible kernels (RDNA2 `gfx1030` is recommended):
+>   ```bash
+>   export HSA_OVERRIDE_GFX_VERSION=10.3.0
+>   python3 -m uvicorn server.main:app --host 0.0.0.0 --port 7890
+>   ```
+>   *(Note: We have also added auto-configuration in `server/main.py` which attempts to set `HSA_OVERRIDE_GFX_VERSION=10.3.0` automatically if not already set, but exporting it explicitly in your shell is always safer.)*
 
 
 ---
