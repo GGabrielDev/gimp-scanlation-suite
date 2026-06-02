@@ -262,6 +262,8 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
     if inference_mode == "Remote" and configure_per_path and run_mode == Gimp.RunMode.INTERACTIVE:
         from gi.repository import GdkPixbuf
         import io
+        import base64
+        import threading
         from PIL import Image
 
         def numpy_to_pixbuf(np_arr, max_width=120, max_height=80):
@@ -274,6 +276,47 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
             loader.write(buffered.getvalue())
             loader.close()
             return loader.get_pixbuf()
+
+        def on_analyze_clicked(button, crop_img, hint_entry):
+            button.set_sensitive(False)
+            button.set_label("Analyzing...")
+            
+            def run_analysis():
+                try:
+                    pil_img = Image.fromarray(crop_img)
+                    buffered = io.BytesIO()
+                    pil_img.save(buffered, format="PNG")
+                    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                    
+                    options = {
+                        "analyze_style": True,
+                        "source_language": source_lang,
+                        "material_type": material_type
+                    }
+                    
+                    results = remote_client.dispatch_batch(
+                        task_type="ocr",
+                        model_id=consensus_expert_b,
+                        batch_payload=[{"image_data": img_str}],
+                        api_url=api_url,
+                        options=options
+                    )
+                    
+                    if results and results[0]:
+                        description = results[0].strip()
+                        GLib.idle_add(lambda: hint_entry.set_text(description))
+                    else:
+                        GLib.idle_add(lambda: hint_entry.set_text("No analysis returned."))
+                except Exception as ex:
+                    sys.stderr.write(f"[Scanlation OCR] Style analysis failed: {ex}\n")
+                    GLib.idle_add(lambda: hint_entry.set_text("Analysis failed."))
+                finally:
+                    GLib.idle_add(lambda: button.set_sensitive(True))
+                    GLib.idle_add(lambda: button.set_label("✨ Analyze"))
+            
+            t = threading.Thread(target=run_analysis)
+            t.daemon = True
+            t.start()
 
         desc_dialog = Gtk.Dialog(title="Configure Options Per Text Block", parent=None, flags=0)
         desc_dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
@@ -359,8 +402,12 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
             entry_hint.set_width_chars(30)
             entry_hint.set_text(per_path_options[idx]["context_hint"])
             
-            hint_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+            btn_analyze = Gtk.Button(label="✨ Analyze")
+            btn_analyze.connect("clicked", on_analyze_clicked, crop, entry_hint)
+            
+            hint_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             hint_box.pack_start(entry_hint, True, True, 0)
+            hint_box.pack_start(btn_analyze, False, False, 0)
             list_grid.attach(hint_box, 2, row_idx, 1, 1)
             
             rows_widgets.append((chk_row, entry_hint))

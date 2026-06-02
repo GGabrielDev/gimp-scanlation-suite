@@ -121,7 +121,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
     total_start = time.time()
 
     if MODELS_CONFIG.get(model, {}).get("handler_class") == "DeepSeekAPI":
-        raw_ocr_model_id = "manga_ocr" if source_lang.lower() == "japanese" else "PaddleOCR_Manga"
+        raw_ocr_model_id = "PaddleOCR_Manga" if options.get("analyze_style") else ("manga_ocr" if source_lang.lower() == "japanese" else "PaddleOCR_Manga")
         yield json.dumps({
             "type": "progress",
             "percentage": 0.0,
@@ -133,14 +133,17 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
             yield json.dumps({"type": "progress", "percentage": 0.0, "message": f"Error: Failed to load raw OCR model: {e}"}) + "\n"
             raise RuntimeError(f"Failed to load raw OCR model: {e}")
 
-        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-        if not api_key:
-            yield json.dumps({
-                "type": "progress",
-                "percentage": 0.0,
-                "message": "Error: DEEPSEEK_API_KEY environment variable is not set."
-            }) + "\n"
-            raise ValueError("DEEPSEEK_API_KEY environment variable is not set.")
+        if not options.get("analyze_style"):
+            api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+            if not api_key:
+                yield json.dumps({
+                    "type": "progress",
+                    "percentage": 0.0,
+                    "message": "Error: DEEPSEEK_API_KEY environment variable is not set."
+                }) + "\n"
+                raise ValueError("DEEPSEEK_API_KEY environment variable is not set.")
+        else:
+            api_key = ""
 
         llm = None
     else:
@@ -157,14 +160,14 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
 
     try:
         if MODELS_CONFIG.get(model, {}).get("handler_class") == "DeepSeekAPI":
-            # 1. Run local raw OCR on all items sequentially (safest for CPU/GPU)
+            # 1. Run local raw OCR or style analysis on all items sequentially
             raw_texts = []
             pass1_start = time.time()
             for idx, item in enumerate(batch_payload):
                 yield json.dumps({
                     "type": "progress",
-                    "percentage": 0.5 * (idx / N) if N > 0 else 0.0,
-                    "message": f"Extracting raw OCR {idx+1}/{N}..."
+                    "percentage": (1.0 * (idx / N)) if options.get("analyze_style") else (0.5 * (idx / N)) if N > 0 else 0.0,
+                    "message": f"Analyzing text style {idx+1}/{N}..." if options.get("analyze_style") else f"Extracting raw OCR {idx+1}/{N}..."
                 }) + "\n"
 
                 img_str = item.get("image_data", "") if isinstance(item, dict) else str(item)
@@ -180,155 +183,182 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                     header, data = img_str.split(",", 1)
                     pil_img = Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
                     
-                    if raw_ocr_model_id == "manga_ocr":
+                    if raw_ocr_model_id == "manga_ocr" and not options.get("analyze_style"):
                         text_raw = raw_ocr_model(pil_img).strip()
                     else:
                         raw_ocr_model.reset()
-                        messages = [
-                            {
-                                "role": "system",
-                                "content": "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
-                            },
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "image_url", "image_url": {"url": img_str}},
-                                    {"type": "text", "text": "OCR:"}
-                                ]
-                            }
-                        ]
+                        if options.get("analyze_style"):
+                            system_prompt = (
+                                "You are an expert manga text style and visual analyzer. Analyze the provided image crop. "
+                                "Describe the text style (e.g. handdrawn, stylized, standard/gothic/sans-serif font, handwritten), "
+                                "any stylized or handdrawn emojis/symbols (e.g. sweatdrops, hearts, anger marks, bubbles), "
+                                "and what it is reading/representing in general (e.g. whispering, screaming, rumble SFX, impact SFX, speech). "
+                                "Keep the description very concise, under 15 words. Output ONLY the description, do not include any quotes or conversational preamble."
+                            )
+                            user_prompt = "Analyze this manga text crop. Describe the text style, handwritten symbols/emojis, and general tone/reading in under 15 words:"
+                            
+                            messages = [
+                                {
+                                    "role": "system",
+                                    "content": system_prompt
+                                },
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "image_url", "image_url": {"url": img_str}},
+                                        {"type": "text", "text": user_prompt}
+                                    ]
+                                }
+                            ]
+                        else:
+                            messages = [
+                                {
+                                    "role": "system",
+                                    "content": "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
+                                },
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "image_url", "image_url": {"url": img_str}},
+                                        {"type": "text", "text": "OCR:"}
+                                    ]
+                                }
+                            ]
                         response = raw_ocr_model.create_chat_completion(messages=messages)
                         text_raw = response["choices"][0]["message"]["content"].strip()
                     
                     crop_elapsed = time.time() - crop_start
-                    sys.stderr.write(f"[Server OCR Service] Raw OCR Crop {idx+1}/{N} ({raw_ocr_model_id}) completed in {crop_elapsed:.2f} seconds | Raw text: '{text_raw}'\n")
+                    sys.stderr.write(f"[Server OCR Service] Crop {idx+1}/{N} completed in {crop_elapsed:.2f} seconds | Text/Style: '{text_raw}'\n")
                     raw_texts.append(text_raw)
                 except Exception as raw_err:
-                    sys.stderr.write(f"[Server OCR Service] Raw OCR failed on crop {idx}: {raw_err}\n")
+                    sys.stderr.write(f"[Server OCR Service] Raw OCR/Style extraction failed on crop {idx}: {raw_err}\n")
                     raw_texts.append("")
             
             pass1_elapsed = time.time() - pass1_start
-            sys.stderr.write(f"[Server OCR Service] DeepSeek Pipeline - Pass 1 (Raw OCR extraction) completed in {pass1_elapsed:.2f} seconds (avg {pass1_elapsed/N:.2f}s per crop).\n")
+            sys.stderr.write(f"[Server OCR Service] DeepSeek Pipeline - Pass 1 completed in {pass1_elapsed:.2f} seconds.\n")
 
-            # 2. Run DeepSeek API correction concurrently
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            if options.get("analyze_style"):
+                results = raw_texts
+            else:
+                # 2. Run DeepSeek API correction concurrently
+                from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
-            api_base = api_base.rstrip("/")
-            url = f"{api_base}/chat/completions"
+                api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
+                api_base = api_base.rstrip("/")
+                url = f"{api_base}/chat/completions"
 
-            def call_deepseek_correction(idx, text_raw, item):
-                if not text_raw:
-                    return idx, ""
-                try:
-                    lang_name = "日本語" if source_lang.lower() == "japanese" else source_lang
-                    enable_thinking_global = options.get("enable_thinking", False)
-                    enable_thinking_item = item.get("enable_thinking", enable_thinking_global) if isinstance(item, dict) else enable_thinking_global
-                    context_hint_item = item.get("context_hint", "") if isinstance(item, dict) else ""
+                def call_deepseek_correction(idx, text_raw, item):
+                    if not text_raw:
+                        return idx, ""
+                    try:
+                        lang_name = "日本語" if source_lang.lower() == "japanese" else source_lang
+                        enable_thinking_global = options.get("enable_thinking", False)
+                        enable_thinking_item = item.get("enable_thinking", enable_thinking_global) if isinstance(item, dict) else enable_thinking_global
+                        context_hint_item = item.get("context_hint", "") if isinstance(item, dict) else ""
 
-                    if source_lang.lower() == "japanese":
-                        system_prompt = (
-                            f"あなたは{material_type}の非常に正確なテキスト校正およびOCRポストプロセスのアシスタントです。 "
-                            f"あなたの仕事は、提供された原材料から取得した{lang_name}のテキストの誤字脱字やOCR読み取りエラーを校正・修正することです。 "
-                            "テキストの翻訳は行わないでください。出力は元の言語の修正後のテキストのみにしてください。 "
-                            "説明や対話的な表現、余計なマークダウンは一切含めないでください。"
-                        )
-                        user_prompt = (
-                            f"校正対象の生OCRテキスト:\n"
-                            f"\"\"\"\n"
-                            f"{text_raw}\n"
-                            f"\"\"\"\n\n"
-                        )
-                        if context_hint_item:
-                            user_prompt += f"このテキストの追加の文脈情報/ヒント: {context_hint_item}\n\n"
-                        user_prompt += (
-                            f"元の意味とレイアウトを維持したまま、修正された{lang_name}のテキストのみを出力してください。 "
-                            "テキストがすでに正確であるか、修正が必要ない場合は、生OCRテキストをそのまま出力してください。"
-                        )
-                    else:
-                        system_prompt = (
-                            f"You are a precise text editor and OCR post-processing assistant for {material_type}. "
-                            f"Your job is to correct and refine raw OCR text transcribed from the source language {lang_name}. "
-                            "Do NOT translate the text. Output ONLY the corrected text in the original language. "
-                            "Do not add any explanations, markdown formatting, or conversational filler."
-                        )
-                        user_prompt = (
-                            f"Raw OCR text to correct:\n"
-                            f"\"\"\"\n"
-                            f"{text_raw}\n"
-                            f"\"\"\"\n\n"
-                        )
-                        if context_hint_item:
-                            user_prompt += f"Additional Context Hint for this text: {context_hint_item}\n\n"
-                        user_prompt += (
-                            f"Please output ONLY the corrected {lang_name} text, maintaining the original meaning and layout. "
-                            f"If the text is already correct or there is nothing to correct, output the raw text as-is."
-                        )
+                        if source_lang.lower() == "japanese":
+                            system_prompt = (
+                                f"あなたは{material_type}の非常に正確なテキスト校正およびOCRポストプロセスのアシスタントです。 "
+                                f"あなたの仕事は、提供された原材料から取得した{lang_name}のテキストの誤字脱字やOCR読み取りエラーを校正・修正することです。 "
+                                "テキストの翻訳は行わないでください。出力は元の言語の修正後のテキストのみにしてください。 "
+                                "説明や対話的な表現、余計なマークダウンは一切含めないでください。"
+                            )
+                            user_prompt = (
+                                f"校正対象の生OCRテキスト:\n"
+                                f"\"\"\"\n"
+                                f"{text_raw}\n"
+                                f"\"\"\"\n\n"
+                            )
+                            if context_hint_item:
+                                user_prompt += f"このテキストの追加の文脈情報/ヒント: {context_hint_item}\n\n"
+                            user_prompt += (
+                                f"元の意味とレイアウトを維持したまま、修正された{lang_name}のテキストのみを出力してください。 "
+                                "テキストがすでに正確であるか、修正が必要ない場合は、生OCRテキストをそのまま出力してください。"
+                            )
+                        else:
+                            system_prompt = (
+                                f"You are a precise text editor and OCR post-processing assistant for {material_type}. "
+                                f"Your job is to correct and refine raw OCR text transcribed from the source language {lang_name}. "
+                                "Do NOT translate the text. Output ONLY the corrected text in the original language. "
+                                "Do not add any explanations, markdown formatting, or conversational filler."
+                            )
+                            user_prompt = (
+                                f"Raw OCR text to correct:\n"
+                                f"\"\"\"\n"
+                                f"{text_raw}\n"
+                                f"\"\"\"\n\n"
+                            )
+                            if context_hint_item:
+                                user_prompt += f"Additional Context Hint for this text: {context_hint_item}\n\n"
+                            user_prompt += (
+                                f"Please output ONLY the corrected {lang_name} text, maintaining the original meaning and layout. "
+                                f"If the text is already correct or there is nothing to correct, output the raw text as-is."
+                            )
 
-                    headers = {
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json"
-                    }
-                    payload = {
-                        "model": MODELS_CONFIG.get(model, {}).get("model_name", "deepseek-chat"),
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ]
-                    }
-                    if enable_thinking_item:
-                        payload["thinking"] = {"type": "enabled"}
-                        payload["reasoning_effort"] = "high"
-                    else:
-                        payload["thinking"] = {"type": "disabled"}
-                        payload["temperature"] = 0.2
+                        headers = {
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        }
+                        payload = {
+                            "model": MODELS_CONFIG.get(model, {}).get("model_name", "deepseek-chat"),
+                            "messages": [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt}
+                            ]
+                        }
+                        if enable_thinking_item:
+                            payload["thinking"] = {"type": "enabled"}
+                            payload["reasoning_effort"] = "high"
+                        else:
+                            payload["thinking"] = {"type": "disabled"}
+                            payload["temperature"] = 0.2
 
-                    corr_start = time.time()
-                    response = requests.post(url, json=payload, headers=headers, timeout=120.0)
-                    response.raise_for_status()
-                    res_json = response.json()
+                        corr_start = time.time()
+                        response = requests.post(url, json=payload, headers=headers, timeout=120.0)
+                        response.raise_for_status()
+                        res_json = response.json()
 
-                    reasoning = res_json["choices"][0]["message"].get("reasoning_content", "")
-                    if reasoning:
-                        sys.stderr.write(f"\n[Server OCR Service] DeepSeek Reasoning:\n---\n{reasoning}\n---\n")
+                        reasoning = res_json["choices"][0]["message"].get("reasoning_content", "")
+                        if reasoning:
+                            sys.stderr.write(f"\n[Server OCR Service] DeepSeek Reasoning:\n---\n{reasoning}\n---\n")
 
-                    corrected_text = res_json["choices"][0]["message"]["content"].strip()
-                    corrected_text = corrected_text.strip().strip('"\'')
-                    corr_elapsed = time.time() - corr_start
-                    sys.stderr.write(f"[Server OCR Service] DeepSeek Correction for Crop {idx+1} completed in {corr_elapsed:.2f} seconds | Corrected text: '{corrected_text}'\n")
-                    return idx, corrected_text
-                except Exception as ocr_err:
-                    sys.stderr.write(f"[Server OCR Service] Error during DeepSeek OCR pipeline on item {idx}: {ocr_err}\n")
-                    return idx, text_raw
+                        corrected_text = res_json["choices"][0]["message"]["content"].strip()
+                        corrected_text = corrected_text.strip().strip('"\'')
+                        corr_elapsed = time.time() - corr_start
+                        sys.stderr.write(f"[Server OCR Service] DeepSeek Correction for Crop {idx+1} completed in {corr_elapsed:.2f} seconds | Corrected text: '{corrected_text}'\n")
+                        return idx, corrected_text
+                    except Exception as ocr_err:
+                        sys.stderr.write(f"[Server OCR Service] Error during DeepSeek OCR pipeline on item {idx}: {ocr_err}\n")
+                        return idx, text_raw
 
-            yield json.dumps({
-                "type": "progress",
-                "percentage": 0.5,
-                "message": "Correcting OCR outputs with DeepSeek in parallel..."
-            }) + "\n"
+                yield json.dumps({
+                    "type": "progress",
+                    "percentage": 0.5,
+                    "message": "Correcting OCR outputs with DeepSeek in parallel..."
+                }) + "\n"
 
-            corrected_results = [None] * N
-            pass2_start = time.time()
-            with ThreadPoolExecutor(max_workers=min(10, N)) as executor:
-                futures = []
-                for idx, text_raw in enumerate(raw_texts):
-                    item = batch_payload[idx]
-                    futures.append(executor.submit(call_deepseek_correction, idx, text_raw, item))
+                corrected_results = [None] * N
+                pass2_start = time.time()
+                with ThreadPoolExecutor(max_workers=min(10, N)) as executor:
+                    futures = []
+                    for idx, text_raw in enumerate(raw_texts):
+                        item = batch_payload[idx]
+                        futures.append(executor.submit(call_deepseek_correction, idx, text_raw, item))
 
-                completed = 0
-                for f in as_completed(futures):
-                    idx, res = f.result()
-                    corrected_results[idx] = res
-                    completed += 1
-                    yield json.dumps({
-                        "type": "progress",
-                        "percentage": 0.5 + 0.5 * (completed / N) if N > 0 else 1.0,
-                        "message": f"Correcting OCR outputs with DeepSeek {completed}/{N}..."
-                    }) + "\n"
+                    completed = 0
+                    for f in as_completed(futures):
+                        idx, res = f.result()
+                        corrected_results[idx] = res
+                        completed += 1
+                        yield json.dumps({
+                            "type": "progress",
+                            "percentage": 0.5 + 0.5 * (completed / N) if N > 0 else 1.0,
+                            "message": f"Correcting OCR outputs with DeepSeek {completed}/{N}..."
+                        }) + "\n"
 
-            pass2_elapsed = time.time() - pass2_start
-            sys.stderr.write(f"[Server OCR Service] DeepSeek Pipeline - Pass 2 (DeepSeek API correction) completed in {pass2_elapsed:.2f} seconds.\n")
-            results = [r if r is not None else "" for r in corrected_results]
+                pass2_elapsed = time.time() - pass2_start
+                sys.stderr.write(f"[Server OCR Service] DeepSeek Pipeline - Pass 2 (DeepSeek API correction) completed in {pass2_elapsed:.2f} seconds.\n")
+                results = [r if r is not None else "" for r in corrected_results]
 
         else:
             # Run local models sequentially
@@ -352,8 +382,20 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                 except Exception as r_err:
                     sys.stderr.write(f"[Server OCR Service] LLM reset error: {r_err}\n")
 
-                if MODELS_CONFIG[model].get("handler_class") == "Llava15ChatHandler":
+                if options.get("analyze_style"):
+                    system_text = (
+                        "You are an expert manga text style and visual analyzer. Analyze the provided image crop. "
+                        "Describe the text style (e.g. handdrawn, stylized, standard/gothic/sans-serif font, handwritten), "
+                        "any stylized or handdrawn emojis/symbols (e.g. sweatdrops, hearts, anger marks, bubbles), "
+                        "and what it is reading/representing in general (e.g. whispering, screaming, rumble SFX, impact SFX, speech). "
+                        "Keep the description very concise, under 15 words. Output ONLY the description, do not include any quotes or conversational preamble."
+                    )
+                    user_text = "Analyze this manga text crop. Describe the text style, handwritten symbols/emojis, and general tone/reading in under 15 words:"
+                else:
+                    system_text = "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
                     user_text = f"You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing.\n\nPrompt: {prompt}"
+
+                if MODELS_CONFIG[model].get("handler_class") == "Llava15ChatHandler":
                     messages = [
                         {
                             "role": "user",
@@ -367,13 +409,13 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                     messages = [
                         {
                             "role": "system",
-                            "content": "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
+                            "content": system_text
                         },
                         {
                             "role": "user",
                             "content": [
                                 {"type": "image_url", "image_url": {"url": img_str}},
-                                {"type": "text", "text": prompt}
+                                {"type": "text", "text": "OCR:" if options.get("analyze_style") else prompt}
                             ]
                         }
                     ]
