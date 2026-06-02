@@ -395,7 +395,18 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                     system_text = "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
                     user_text = f"You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing.\n\nPrompt: {prompt}"
 
-                if MODELS_CONFIG[model].get("handler_class") == "Llava15ChatHandler":
+                if MODELS_CONFIG[model].get("handler_class") == "TextOnly":
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": system_text
+                        },
+                        {
+                            "role": "user",
+                            "content": "OCR:" if options.get("analyze_style") else prompt
+                        }
+                    ]
+                elif MODELS_CONFIG[model].get("handler_class") == "Llava15ChatHandler":
                     messages = [
                         {
                             "role": "user",
