@@ -38,42 +38,71 @@ def run_translate_generator(model: str, batch_payload: list, options: dict):
         )
         
         # Construct the prompt
-        system_prompt = (
-            f"You are a professional manga/comic translation assistant. "
-            f"Translate the following {src_lang} dialogue blocks into {tgt_lang}. "
-            "You will receive a list of dialogue blocks in their correct reading order. "
-            "Each block has an index, a speaker name, and an optional context/hint. "
-            "Maintain the character relationships, tone, and formatting. "
-            "Output the translations in a valid JSON format. "
-            "Do NOT output any markdown tags (like ```json), conversational text, or explanations. "
-            "Output ONLY the JSON object conforming to this schema:\n"
-            "{\n"
-            "  \"translations\": [\n"
-            "    { \"index\": 1, \"translation\": \"translated text\" },\n"
-            "    ...\n"
-            "  ]\n"
-            "}"
-        )
+        analyze_scene = bool(options.get("analyze_scene") or False)
         
-        user_prompt = ""
-        if global_ctx:
-            user_prompt += f"Global Scene Context:\n{global_ctx}\n\n"
-        
-        user_prompt += "Dialogue blocks to translate:\n"
-        for item in dialogues:
-            idx = item.get("index")
-            text = item.get("text")
-            speaker = item.get("speaker")
-            ctx = item.get("context")
+        if analyze_scene:
+            system_prompt = (
+                "You are an expert manga/comic translation helper. "
+                "Analyze the following dialogue blocks from a scene and determine:\n"
+                "1. Distinct character speaker names (up to 5 names, like 'Character A', 'Character B', or descriptive names if unknown).\n"
+                "2. For each block:\n"
+                "   - Who is speaking (choose from the identified character names, or use 'SFX / Onomatopoeia' for sound effects, or 'Unassigned / Narrative' for narrator text).\n"
+                "   - A short emotional or contextual hint (e.g. 'screaming', 'whispering', 'panicked/sweatmark' if you see sweat symbols like 💦/💦, 'loving/heart' if you see hearts like ♥/♡, 'shocked' if you see !?, etc.). Keep hint under 3 words.\n"
+                "Output the results in a valid JSON format. Do NOT output markdown tags (like ```json), conversational text, or explanations.\n"
+                "Output ONLY the JSON object conforming to this schema:\n"
+                "{\n"
+                "  \"characters\": [\"Name 1\", \"Name 2\", ...],\n"
+                "  \"analysis\": [\n"
+                "    { \"index\": 1, \"speaker\": \"Name 1\", \"context\": \"hint\" },\n"
+                "    ...\n"
+                "  ]\n"
+                "}"
+            )
             
-            user_prompt += f"Index: {idx}\n"
-            if speaker:
-                user_prompt += f"Speaker: {speaker}\n"
-            if ctx:
-                user_prompt += f"Context: {ctx}\n"
-            user_prompt += f"Source Text: {text}\n\n"
-        
-        yield json.dumps({"type": "progress", "percentage": 0.3, "message": f"Performing translation via {model}..."}) + "\n"
+            user_prompt = "Dialogue blocks to analyze:\n"
+            for item in dialogues:
+                idx = item.get("index")
+                text = item.get("text")
+                user_prompt += f"Index: {idx}\nSource Text: {text}\n\n"
+                
+            yield json.dumps({"type": "progress", "percentage": 0.3, "message": f"Pre-analyzing scene details via {model}..."}) + "\n"
+        else:
+            system_prompt = (
+                f"You are a professional manga/comic translation assistant. "
+                f"Translate the following {src_lang} dialogue blocks into {tgt_lang}. "
+                "You will receive a list of dialogue blocks in their correct reading order. "
+                "Each block has an index, a speaker name, and an optional context/hint. "
+                "Maintain the character relationships, tone, and formatting. "
+                "Output the translations in a valid JSON format. "
+                "Do NOT output any markdown tags (like ```json), conversational text, or explanations. "
+                "Output ONLY the JSON object conforming to this schema:\n"
+                "{\n"
+                "  \"translations\": [\n"
+                "    { \"index\": 1, \"translation\": \"translated text\" },\n"
+                "    ...\n"
+                "  ]\n"
+                "}"
+            )
+            
+            user_prompt = ""
+            if global_ctx:
+                user_prompt += f"Global Scene Context:\n{global_ctx}\n\n"
+            
+            user_prompt += "Dialogue blocks to translate:\n"
+            for item in dialogues:
+                idx = item.get("index")
+                text = item.get("text")
+                speaker = item.get("speaker")
+                ctx = item.get("context")
+                
+                user_prompt += f"Index: {idx}\n"
+                if speaker:
+                    user_prompt += f"Speaker: {speaker}\n"
+                if ctx:
+                    user_prompt += f"Context: {ctx}\n"
+                user_prompt += f"Source Text: {text}\n\n"
+            
+            yield json.dumps({"type": "progress", "percentage": 0.3, "message": f"Performing translation via {model}..."}) + "\n"
         
         # Execute inference
         if handler_class == "DeepSeekAPI":
@@ -146,6 +175,11 @@ def run_translate_generator(model: str, batch_payload: list, options: dict):
             if lines[-1].startswith("```"):
                 lines = lines[:-1]
             text_clean = "\n".join(lines).strip()
+            
+        if analyze_scene:
+            yield json.dumps({"type": "progress", "percentage": 1.0, "message": "Scene analysis completed."}) + "\n"
+            yield json.dumps({"type": "result", "results": [text_clean]}) + "\n"
+            return
         
         # Try parsing JSON
         try:

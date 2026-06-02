@@ -231,6 +231,15 @@ def show_translate_dialog(procedure, config, image, bounding_boxes, bubble_state
             state["context"] = entry_hint.get_text()
             state["skip"] = chk_exclude.get_active()
 
+    def move_bubble_state(index, offset):
+        save_current_edits()
+        target_idx = index + offset
+        if 0 <= target_idx < len(bubble_states):
+            bubble_states[index], bubble_states[target_idx] = bubble_states[target_idx], bubble_states[index]
+            crops[index], crops[target_idx] = crops[target_idx], crops[index]
+            rebuild_dialogue_queue()
+            box_blocks.show_all()
+
     def rebuild_dialogue_queue():
         for child in box_blocks.get_children():
             child.destroy()
@@ -323,10 +332,119 @@ def show_translate_dialog(procedure, config, image, bounding_boxes, bubble_state
             
             grid_row.attach(scroll_src, 1, 1, 3, 1)
             
+            # Up/Down reordering buttons box
+            btn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            btn_box.set_valign(Gtk.Align.CENTER)
+            
+            btn_up = Gtk.Button(label="▲")
+            btn_up.set_tooltip_text("Move Up in Reading Order")
+            btn_up.set_sensitive(idx > 0)
+            
+            btn_down = Gtk.Button(label="▼")
+            btn_down.set_tooltip_text("Move Down in Reading Order")
+            btn_down.set_sensitive(idx < len(bubble_states) - 1)
+            
+            btn_box.pack_start(btn_up, False, False, 0)
+            btn_box.pack_start(btn_down, False, False, 0)
+            
+            grid_row.attach(btn_box, 4, 0, 1, 2)
+            
+            def make_move_up_cb(i):
+                return lambda button: move_bubble_state(i, -1)
+            def make_move_down_cb(i):
+                return lambda button: move_bubble_state(i, 1)
+                
+            btn_up.connect("clicked", make_move_up_cb(idx))
+            btn_down.connect("clicked", make_move_down_cb(idx))
+            
             frame.add(grid_row)
             box_blocks.pack_start(frame, False, False, 0)
             
             row_widgets.append((combo_spk, txt_src, entry_hint, chk_exclude, refresh_speakers))
+
+    # AI Pre-analysis control bar
+    queue_top_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+    queue_top_box.set_margin_bottom(6)
+    
+    btn_analyze = Gtk.Button(label="✨ Pre-Analyze Scene with AI")
+    btn_analyze.set_tooltip_text("Query LLM to identify speakers, assign dialogue types, and suggest context/emotional hints")
+    queue_top_box.pack_start(btn_analyze, False, False, 0)
+    
+    lbl_status = Gtk.Label(label="")
+    lbl_status.set_xalign(0.0)
+    queue_top_box.pack_start(lbl_status, True, True, 0)
+    
+    def set_status(msg):
+        lbl_status.set_text(msg)
+        
+    def enable_analyze_btn():
+        btn_analyze.set_sensitive(True)
+        
+    def apply_scene_analysis(data):
+        characters = data.get("characters", [])
+        for c_idx, name in enumerate(characters[:5]):
+            char_entries[c_idx].set_text(name)
+        on_char_name_changed(None)
+        
+        analysis_list = data.get("analysis", [])
+        for item in analysis_list:
+            idx = item.get("index") - 1
+            if 0 <= idx < len(bubble_states):
+                speaker = item.get("speaker")
+                if speaker == "SFX":
+                    state_speaker = "SFX / Onomatopoeia"
+                elif not speaker or speaker == "Narrative" or speaker == "Unassigned / Narrative":
+                    state_speaker = "Unassigned / Narrative"
+                else:
+                    state_speaker = speaker
+                    
+                bubble_states[idx]["speaker"] = state_speaker
+                bubble_states[idx]["context"] = item.get("context", "")
+                
+        rebuild_dialogue_queue()
+        box_blocks.show_all()
+        lbl_status.set_text("Scene analysis complete! Speakers and hints updated.")
+        
+    def run_scene_analysis_bg():
+        save_current_edits()
+        payload = []
+        for idx, state in enumerate(bubble_states):
+            payload.append({
+                "index": idx + 1,
+                "text": state["text"]
+            })
+            
+        from modules import remote_client
+        api_url = entry_api.get_text().strip() or "http://localhost:7890"
+        trans_model = combo_model.get_active_text() or "DeepSeek"
+        enable_thinking = chk_thinking.get_active()
+        options = {
+            "analyze_scene": True,
+            "enable-thinking": enable_thinking
+        }
+        
+        try:
+            results = remote_client.dispatch_batch("translate", trans_model, payload, api_url, options=options)
+            if results:
+                analysis_json = results[0]
+                import json
+                data = json.loads(analysis_json)
+                GLib.idle_add(apply_scene_analysis, data)
+            else:
+                GLib.idle_add(set_status, "Server returned no results.")
+        except Exception as err:
+            GLib.idle_add(set_status, f"Analysis failed: {err}")
+        finally:
+            GLib.idle_add(enable_analyze_btn)
+            
+    def on_analyze_clicked(button):
+        btn_analyze.set_sensitive(False)
+        lbl_status.set_text("Analyzing scene with AI... Please wait.")
+        t = threading.Thread(target=run_scene_analysis_bg)
+        t.daemon = True
+        t.start()
+        
+    btn_analyze.connect("clicked", on_analyze_clicked)
 
     rebuild_dialogue_queue()
 
@@ -347,7 +465,13 @@ def show_translate_dialog(procedure, config, image, bounding_boxes, bubble_state
         ent.connect("changed", on_char_name_changed)
         
     scroll_blocks.add(box_blocks)
-    notebook.append_page(scroll_blocks, Gtk.Label(label="Dialogue Queue"))
+    
+    queue_page_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    queue_page_vbox.set_border_width(12)
+    queue_page_vbox.pack_start(queue_top_box, False, False, 0)
+    queue_page_vbox.pack_start(scroll_blocks, True, True, 0)
+    
+    notebook.append_page(queue_page_vbox, Gtk.Label(label="Dialogue Queue"))
     
     # Dynamic Model Populating
     def populate_dropdown(models):
