@@ -473,29 +473,50 @@ def show_translate_dialog(procedure, config, image, bounding_boxes, bubble_state
     
     notebook.append_page(queue_page_vbox, Gtk.Label(label="Dialogue Queue"))
     
+    def update_tooltip_and_desc(combo):
+        model_id = combo.get_active_id()
+        if model_id:
+            from modules import remote_client
+            metadata = remote_client.get_model_metadata(model_id)
+            if metadata:
+                desc = metadata.get("description", "")
+                combo.set_tooltip_text(desc)
+            else:
+                combo.set_tooltip_text("")
+        else:
+            combo.set_tooltip_text("")
+
     # Dynamic Model Populating
     def populate_dropdown(models):
         combo_model.remove_all()
-        filtered = [m for m in models if any(w in m.lower() for w in ["deepseek", "arbiter", "llama", "qwen", "gemma", "mistral", "chat", "jp"])]
-        if not filtered:
-            filtered = ["DeepSeek", "JP_Arbiter_8B"]
-        for m in filtered:
-            combo_model.append_text(m)
+        for m in models:
+            combo_model.append(m["model_id"], m["display_name"])
         
+        model_ids = [m["model_id"] for m in models]
         stored_model = config.get_property("translation-model") or "DeepSeek"
-        if stored_model in filtered:
-            combo_model.set_active(filtered.index(stored_model))
+        if stored_model in model_ids:
+            combo_model.set_active_id(stored_model)
         else:
-            combo_model.set_active(0)
+            if "DeepSeek" in model_ids:
+                combo_model.set_active_id("DeepSeek")
+            elif "JP_Arbiter_8B" in model_ids:
+                combo_model.set_active_id("JP_Arbiter_8B")
+            elif model_ids:
+                combo_model.set_active(0)
         
+        update_tooltip_and_desc(combo_model)
         update_thinking_sensitivity()
     
     def update_thinking_sensitivity():
-        active_model = combo_model.get_active_text() or ""
+        active_model = combo_model.get_active_id() or ""
         is_ds = "deepseek" in active_model.lower()
         chk_thinking.set_sensitive(is_ds)
     
-    combo_model.connect("changed", lambda widget: update_thinking_sensitivity())
+    def on_model_changed(widget):
+        update_tooltip_and_desc(widget)
+        update_thinking_sensitivity()
+
+    combo_model.connect("changed", on_model_changed)
     
     def load_remote_models_bg():
         from modules import remote_client
@@ -510,7 +531,9 @@ def show_translate_dialog(procedure, config, image, bounding_boxes, bubble_state
             t.daemon = True
             t.start()
         else:
-            populate_dropdown(["JP_Arbiter_8B"])
+            from modules import remote_client
+            models = remote_client.get_available_models("translate", "")
+            populate_dropdown(models)
     
     combo_inf.connect("changed", lambda widget: update_model_dropdown())
     update_model_dropdown()
@@ -523,7 +546,7 @@ def show_translate_dialog(procedure, config, image, bounding_boxes, bubble_state
         tgt_lang = combo_tgt.get_active_text()
         inf_mode = combo_inf.get_active_text()
         api_url = entry_api.get_text().strip()
-        trans_model = combo_model.get_active_text()
+        trans_model = combo_model.get_active_id()
         enable_thinking = chk_thinking.get_active()
         reading_order = combo_ro.get_active_text()
         

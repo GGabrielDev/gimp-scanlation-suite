@@ -31,15 +31,21 @@ app.include_router(translate.router, prefix="/api/v1")
 app.include_router(detect.router, prefix="/api/v1")
 
 @app.get("/api/v1/models")
-def list_models(task_type: str = Query(..., description="The type of pipeline task, e.g. ocr")):
+def list_models(task_type: str = Query(..., description="The type of pipeline task, e.g. ocr, arbitration, translate, inpaint")):
     """
     Returns the list of available models supported by the server for the specified task type.
     """
     if task_type == "ocr":
-        return {"models": [k for k, v in MODELS_CONFIG.items() if v.get("handler_class") != "Inpainting"]}
+        filtered = [v for v in MODELS_CONFIG.values() if "ocr_expert" in v.tasks]
+    elif task_type == "arbitration":
+        filtered = [v for v in MODELS_CONFIG.values() if "ocr_arbiter" in v.tasks]
+    elif task_type == "translate":
+        filtered = [v for v in MODELS_CONFIG.values() if "translate" in v.tasks]
     elif task_type == "inpaint":
-        return {"models": [k for k, v in MODELS_CONFIG.items() if v.get("handler_class") == "Inpainting"]}
-    return {"models": []}
+        filtered = [v for v in MODELS_CONFIG.values() if "inpaint" in v.tasks]
+    else:
+        filtered = []
+    return {"models": filtered}
 
 @app.post("/api/v1/dispatch")
 def dispatch(request: BatchRequest):

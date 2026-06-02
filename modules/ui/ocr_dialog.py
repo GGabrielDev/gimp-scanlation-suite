@@ -267,47 +267,72 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
 
     chk_ensemble.connect("toggled", update_consensus_sensitivity)
         
-    # Populating dropdown safely in the idle loop
-    def populate_dropdown(models):
-        combo_model.remove_all()
-        for m in models:
-            combo_model.append_text(m)
-        
-        stored_model = config.get_property("ocr-engine")
-        if stored_model in models:
-            combo_model.set_active(models.index(stored_model))
+    def update_tooltip_and_desc(combo):
+        model_id = combo.get_active_id()
+        if model_id:
+            from modules import remote_client
+            metadata = remote_client.get_model_metadata(model_id)
+            if metadata:
+                desc = metadata.get("description", "")
+                combo.set_tooltip_text(desc)
+            else:
+                combo.set_tooltip_text("")
         else:
-            combo_model.set_active(0)
+            combo.set_tooltip_text("")
+
+    # Populating dropdown safely in the idle loop
+    def populate_dropdown(ocr_models, arb_models):
+        combo_model.remove_all()
+        for m in ocr_models:
+            combo_model.append(m["model_id"], m["display_name"])
+        
+        ocr_ids = [m["model_id"] for m in ocr_models]
+        stored_model = config.get_property("ocr-engine")
+        if stored_model in ocr_ids:
+            combo_model.set_active_id(stored_model)
+        else:
+            if "PaddleOCR_Manga" in ocr_ids:
+                combo_model.set_active_id("PaddleOCR_Manga")
+            elif "PaddleOCR" in ocr_ids:
+                combo_model.set_active_id("PaddleOCR")
+            elif ocr_ids:
+                combo_model.set_active(0)
 
         combo_expert_b.remove_all()
-        for m in models:
-            combo_expert_b.append_text(m)
+        for m in ocr_models:
+            combo_expert_b.append(m["model_id"], m["display_name"])
         stored_expert_b = config.get_property("consensus-expert-b")
-        if stored_expert_b in models:
-            combo_expert_b.set_active(models.index(stored_expert_b))
+        if stored_expert_b in ocr_ids:
+            combo_expert_b.set_active_id(stored_expert_b)
         else:
-            if "PaddleOCR_Manga" in models:
-                combo_expert_b.set_active(models.index("PaddleOCR_Manga"))
-            elif "PaddleOCR" in models:
-                combo_expert_b.set_active(models.index("PaddleOCR"))
-            else:
+            if "PaddleOCR_Manga" in ocr_ids:
+                combo_expert_b.set_active_id("PaddleOCR_Manga")
+            elif "PaddleOCR" in ocr_ids:
+                combo_expert_b.set_active_id("PaddleOCR")
+            elif ocr_ids:
                 combo_expert_b.set_active(0)
 
         combo_arbiter.remove_all()
-        for m in models:
-            combo_arbiter.append_text(m)
+        for m in arb_models:
+            combo_arbiter.append(m["model_id"], m["display_name"])
         stored_arbiter = config.get_property("consensus-arbiter")
-        if stored_arbiter in models:
-            combo_arbiter.set_active(models.index(stored_arbiter))
+        arb_ids = [m["model_id"] for m in arb_models]
+        if stored_arbiter in arb_ids:
+            combo_arbiter.set_active_id(stored_arbiter)
         else:
-            if "DeepSeek-V4-Flash" in models:
-                combo_arbiter.set_active(models.index("DeepSeek-V4-Flash"))
-            elif "DeepSeek" in models:
-                combo_arbiter.set_active(models.index("DeepSeek"))
-            elif "JP_Arbiter_8B" in models:
-                combo_arbiter.set_active(models.index("JP_Arbiter_8B"))
-            else:
+            if "DeepSeek-V4-Flash" in arb_ids:
+                combo_arbiter.set_active_id("DeepSeek-V4-Flash")
+            elif "DeepSeek" in arb_ids:
+                combo_arbiter.set_active_id("DeepSeek")
+            elif "JP_Arbiter_8B" in arb_ids:
+                combo_arbiter.set_active_id("JP_Arbiter_8B")
+            elif arb_ids:
                 combo_arbiter.set_active(0)
+        
+        # Update tooltips initially
+        update_tooltip_and_desc(combo_model)
+        update_tooltip_and_desc(combo_expert_b)
+        update_tooltip_and_desc(combo_arbiter)
         
         update_thinking_sensitivity()
         update_consensus_sensitivity()
@@ -316,8 +341,9 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
     def load_remote_models_bg():
         from modules import remote_client
         api_url = config.get_property("api-url") or "http://localhost:7890"
-        models = remote_client.get_available_models("ocr", api_url)
-        GLib.idle_add(populate_dropdown, models)
+        ocr_models = remote_client.get_available_models("ocr", api_url)
+        arb_models = remote_client.get_available_models("arbitration", api_url)
+        GLib.idle_add(populate_dropdown, ocr_models, arb_models)
 
     def update_model_dropdown():
         current_mode = config.get_property("inference-mode")
@@ -326,7 +352,17 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
             t.daemon = True
             t.start()
         else:
-            populate_dropdown(["PaddleOCR"])
+            # Local mode fallbacks using metadata registry
+            from modules import remote_client
+            ocr_models = remote_client.get_available_models("ocr", "")
+            arb_models = remote_client.get_available_models("arbitration", "")
+            
+            # Ensure "PaddleOCR" local engine option is available
+            local_ocr = {"model_id": "PaddleOCR", "display_name": "PaddleOCR (Local)", "description": "Local GGUF model optimized for Japanese text extraction"}
+            if not any(m["model_id"] == "PaddleOCR" for m in ocr_models):
+                ocr_models = [local_ocr] + ocr_models
+                
+            populate_dropdown(ocr_models, arb_models)
 
     def on_inf_changed(widget):
         val = widget.get_active_text()
@@ -336,24 +372,27 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
     combo_inf.connect("changed", on_inf_changed)
 
     def on_model_changed(widget):
-        val = widget.get_active_text()
+        val = widget.get_active_id()
         if val:
             config.set_property("ocr-engine", val)
+        update_tooltip_and_desc(widget)
         update_thinking_sensitivity()
             
     combo_model.connect("changed", on_model_changed)
 
     def on_expert_b_changed(widget):
-        val = widget.get_active_text()
+        val = widget.get_active_id()
         if val:
             config.set_property("consensus-expert-b", val)
+        update_tooltip_and_desc(widget)
 
     combo_expert_b.connect("changed", on_expert_b_changed)
 
     def on_arbiter_changed(widget):
-        val = widget.get_active_text()
+        val = widget.get_active_id()
         if val:
             config.set_property("consensus-arbiter", val)
+        update_tooltip_and_desc(widget)
         update_thinking_sensitivity()
 
     combo_arbiter.connect("changed", on_arbiter_changed)

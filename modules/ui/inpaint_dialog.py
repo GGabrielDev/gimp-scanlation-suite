@@ -55,19 +55,11 @@ def show_inpaint_dialog(procedure, config):
     combo_inf.append_text("Local")
     combo_inf.append_text("Remote")
     
-    # Combo box for Inpaint Model (Including new SD models)
+    # Combo box for Inpaint Model
     combo_model = Gtk.ComboBoxText()
-    combo_model.append_text("lama-manga")
-    combo_model.append_text("aot-inpainting")
-    combo_model.append_text("sd-inpainting")
-    combo_model.append_text("anime-inpaint")
-    combo_model.append_text("sdxl-inpainting")
 
-    # VLM Arbiter custom dropdown (Choose only between VLM models)
+    # VLM Arbiter custom dropdown
     combo_arbiter = Gtk.ComboBoxText()
-    vlm_models = ["olmOCR2_Q4", "olmOCR2_Q6", "olmOCR2_Q8", "PaddleOCR_Manga"]
-    for m in vlm_models:
-        combo_arbiter.append_text(m)
 
     # Frame 1: General Settings
     gen_frame = Gtk.Frame(label="  General Settings  ")
@@ -172,18 +164,18 @@ def show_inpaint_dialog(procedure, config):
     else:
         combo_inf.set_active(0)
 
-    model_val = config.get_property("inpaint-model") or "lama-manga"
-    models_list = ["lama-manga", "aot-inpainting", "sd-inpainting", "anime-inpaint", "sdxl-inpainting"]
-    if model_val in models_list:
-        combo_model.set_active(models_list.index(model_val))
-    else:
-        combo_model.set_active(0)
-
-    stored_arbiter = config.get_property("consensus-arbiter") or "olmOCR2_Q4"
-    if stored_arbiter in vlm_models:
-        combo_arbiter.set_active(vlm_models.index(stored_arbiter))
-    else:
-        combo_arbiter.set_active(0)
+    def update_tooltip_and_desc(combo):
+        model_id = combo.get_active_id()
+        if model_id:
+            from modules import remote_client
+            metadata = remote_client.get_model_metadata(model_id)
+            if metadata:
+                desc = metadata.get("description", "")
+                combo.set_tooltip_text(desc)
+            else:
+                combo.set_tooltip_text("")
+        else:
+            combo.set_tooltip_text("")
 
     # Active states update callback
     def update_widget_states():
@@ -192,8 +184,8 @@ def show_inpaint_dialog(procedure, config):
         widget_api_url.set_sensitive(is_remote)
         
         # 2. Model type controls diffusion fields
-        model_name = combo_model.get_active_text()
-        is_diffusion = model_name in ["sd-inpainting", "anime-inpaint", "sdxl-inpainting"]
+        model_id = combo_model.get_active_id()
+        is_diffusion = model_id in ["sd-inpainting", "anime-inpaint", "sdxl-inpainting"]
         
         widget_auto_prompt.set_sensitive(is_diffusion)
         
@@ -212,24 +204,87 @@ def show_inpaint_dialog(procedure, config):
             widget_steps.set_sensitive(False)
             widget_guidance.set_sensitive(False)
 
+    def populate_dropdowns(inpaint_models, arb_models):
+        combo_model.remove_all()
+        for m in inpaint_models:
+            combo_model.append(m["model_id"], m["display_name"])
+            
+        inpaint_ids = [m["model_id"] for m in inpaint_models]
+        stored_model = config.get_property("inpaint-model") or "lama-manga"
+        if stored_model in inpaint_ids:
+            combo_model.set_active_id(stored_model)
+        else:
+            if "lama-manga" in inpaint_ids:
+                combo_model.set_active_id("lama-manga")
+            elif inpaint_ids:
+                combo_model.set_active(0)
+
+        combo_arbiter.remove_all()
+        for m in arb_models:
+            combo_arbiter.append(m["model_id"], m["display_name"])
+            
+        arb_ids = [m["model_id"] for m in arb_models]
+        stored_arbiter = config.get_property("consensus-arbiter")
+        if stored_arbiter in arb_ids:
+            combo_arbiter.set_active_id(stored_arbiter)
+        else:
+            if "DeepSeek-V4-Flash" in arb_ids:
+                combo_arbiter.set_active_id("DeepSeek-V4-Flash")
+            elif "DeepSeek" in arb_ids:
+                combo_arbiter.set_active_id("DeepSeek")
+            elif "olmOCR2_Q4" in arb_ids:
+                combo_arbiter.set_active_id("olmOCR2_Q4")
+            elif arb_ids:
+                combo_arbiter.set_active(0)
+
+        update_tooltip_and_desc(combo_model)
+        update_tooltip_and_desc(combo_arbiter)
+        update_widget_states()
+        return False
+
+    def load_remote_models_bg():
+        from modules import remote_client
+        api_url = config.get_property("api-url") or "http://localhost:7890"
+        inpaint_models = remote_client.get_available_models("inpaint", api_url)
+        arb_models = remote_client.get_available_models("arbitration", api_url)
+        GLib.idle_add(populate_dropdowns, inpaint_models, arb_models)
+
+    def update_model_dropdowns():
+        current_mode = combo_inf.get_active_text()
+        if current_mode == "Remote":
+            import threading
+            t = threading.Thread(target=load_remote_models_bg)
+            t.daemon = True
+            t.start()
+        else:
+            from modules import remote_client
+            inpaint_models = remote_client.get_available_models("inpaint", "")
+            arb_models = remote_client.get_available_models("arbitration", "")
+            populate_dropdowns(inpaint_models, arb_models)
+
     # Connect signals
     def on_inf_changed(widget):
         val = widget.get_active_text()
         config.set_property("inference-mode", val)
-        update_widget_states()
+        update_model_dropdowns()
     combo_inf.connect("changed", on_inf_changed)
 
     def on_model_changed(widget):
-        val = widget.get_active_text()
-        config.set_property("inpaint-model", val)
+        val = widget.get_active_id()
+        if val:
+            config.set_property("inpaint-model", val)
+        update_tooltip_and_desc(widget)
         update_widget_states()
     combo_model.connect("changed", on_model_changed)
 
     def on_arbiter_changed(widget):
-        val = widget.get_active_text()
+        val = widget.get_active_id()
         if val:
             config.set_property("consensus-arbiter", val)
+        update_tooltip_and_desc(widget)
     combo_arbiter.connect("changed", on_arbiter_changed)
+
+    update_model_dropdowns()
 
     def on_auto_prompt_toggled(widget):
         update_widget_states()
