@@ -126,8 +126,8 @@ class GimpScanlationSuite(Gimp.PlugIn):
             procedure.add_string_argument(
                 "tight-path-mode",
                 "Tight Path _Mode",
-                "Tighten around Speech Bubble inside or Floating Text / SFX",
-                "Speech Bubble",
+                "Tighten around Speech Bubble inside, Floating Text / SFX, or Auto-detect",
+                "Auto",
                 GObject.ParamFlags.READWRITE
             )
             procedure.add_int_argument(

@@ -110,6 +110,7 @@ def show_detect_dialog(procedure, config, image):
     grid.attach(lbl_mode, 0, 1, 1, 1)
     
     combo_mode = Gtk.ComboBoxText()
+    combo_mode.append_text("Auto (Smart Detection)")
     combo_mode.append_text("Speech Bubble")
     combo_mode.append_text("Floating Text / SFX")
     grid.attach(combo_mode, 1, 1, 1, 1)
@@ -122,18 +123,21 @@ def show_detect_dialog(procedure, config, image):
     notebook.append_page(page2_box, label_tab2)
     
     # Set initial widget values & sensitivities
-    mode_val = config.get_property("tight-path-mode") or "Speech Bubble"
-    if mode_val == "Floating Text / SFX":
+    mode_val = config.get_property("tight-path-mode") or "Auto"
+    if mode_val == "Speech Bubble":
         combo_mode.set_active(1)
+        widget_dilation.set_sensitive(False)
+    elif mode_val == "Floating Text / SFX":
+        combo_mode.set_active(2)
         widget_dilation.set_sensitive(True)
     else:
         combo_mode.set_active(0)
-        widget_dilation.set_sensitive(False)
+        widget_dilation.set_sensitive(True)
         
     # Toggle dilation sensitivity based on mode
     def update_tight_widgets():
         mode = combo_mode.get_active_text()
-        widget_dilation.set_sensitive(mode == "Floating Text / SFX")
+        widget_dilation.set_sensitive(mode in ["Auto (Smart Detection)", "Floating Text / SFX"])
         
     # Connect UI signal handlers to config properties
     def on_path_changed(widget):
@@ -145,7 +149,8 @@ def show_detect_dialog(procedure, config, image):
     def on_mode_changed(widget):
         val = widget.get_active_text()
         if val:
-            config.set_property("tight-path-mode", val)
+            mapped_val = "Auto" if "Auto" in val else val
+            config.set_property("tight-path-mode", mapped_val)
             update_tight_widgets()
     combo_mode.connect("changed", on_mode_changed)
     

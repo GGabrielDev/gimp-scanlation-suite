@@ -271,8 +271,14 @@ def run_tight_pathing_processing(procedure, image, drawables, config):
             
         crop_gray = img_gray[y0:y1, x0:x1]
         
+        # Run dynamic classification if mode is set to Auto
+        current_mode = tight_path_mode
+        if current_mode == "Auto":
+            current_mode = classify_crop(crop_gray)
+            sys.stderr.write(f"[Scanlation Detector] Stroke {stroke_id} classified as '{current_mode}'\n")
+            
         # Run custom segmenter
-        if tight_path_mode == "Speech Bubble":
+        if current_mode == "Speech Bubble":
             contours = process_speech_bubble(crop_gray)
         else:
             contours = process_floating_text(crop_gray, dilation_radius)
@@ -550,3 +556,59 @@ def rdp_simplify(points, epsilon):
         return results1[:-1] + results2
     else:
         return [points[0], points[end]]
+
+def classify_crop(crop_gray):
+    h, w = crop_gray.shape
+    total_area = h * w
+    if total_area == 0:
+        return "Floating Text / SFX"
+        
+    # 1. Search for brightest pixel near center for seed selection
+    cy, cx = h // 2, w // 2
+    search_radius = min(15, h // 4, w // 4)
+    best_y, best_x = cy, cx
+    max_val = -1
+    for dy in range(-search_radius, search_radius + 1):
+        for dx in range(-search_radius, search_radius + 1):
+            y, x = cy + dy, cx + dx
+            if 0 <= y < h and 0 <= x < w:
+                if crop_gray[y, x] > max_val:
+                    max_val = crop_gray[y, x]
+                    best_y, best_x = y, x
+                    
+    # If the brightest local pixel is still relatively dark (e.g. < 170), it's definitely not a speech bubble!
+    if max_val < 170:
+        return "Floating Text / SFX"
+        
+    # 2. Flood-fill light pixels from seed
+    mask = np.zeros((h, w), dtype=bool)
+    visited = np.zeros((h, w), dtype=bool)
+    queue = [(best_y, best_x)]
+    visited[best_y, best_x] = True
+    mask[best_y, best_x] = True
+    
+    head = 0
+    while head < len(queue):
+        curr_y, curr_x = queue[head]
+        head += 1
+        for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            ny, nx = curr_y + dy, curr_x + dx
+            if 0 <= ny < h and 0 <= nx < w and not visited[ny, nx]:
+                if crop_gray[ny, nx] > 140:
+                    visited[ny, nx] = True
+                    mask[ny, nx] = True
+                    queue.append((ny, nx))
+                    
+    # 3. Fill internal holes (solidify text inside bubble)
+    filled_mask = fill_bubble_holes(mask)
+    filled_area = np.sum(filled_mask)
+    
+    # Calculate ratio of filled cavity to total crop area
+    ratio = float(filled_area) / total_area
+    sys.stderr.write(f"[Scanlation Classifier] Bounding box crop={w}x{h}, filled_ratio={ratio:.2f}\n")
+    
+    if ratio >= 0.55:
+        return "Speech Bubble"
+    else:
+        return "Floating Text / SFX"
+
