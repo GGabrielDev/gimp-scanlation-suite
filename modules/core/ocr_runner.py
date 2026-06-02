@@ -328,62 +328,51 @@ def run_ocr_processing(procedure, image, active_layer, bounding_boxes, config, r
             rows_to_analyze = []
             for btn, crop_img, hint_entry in individual_buttons:
                 btn.set_sensitive(False)
-                btn.set_label("⏳")
                 rows_to_analyze.append((btn, crop_img, hint_entry))
                 
-            total_rows = len(rows_to_analyze)
-            if total_rows == 0:
-                btn_all.set_sensitive(True)
-                btn_all.set_label("✨ Analyze All")
-                return
-                
-            completed_count = [0]
-            
-            def row_worker(btn, crop_img, hint_entry):
+            def run_sequential_analysis():
                 try:
-                    pil_img = Image.fromarray(crop_img)
-                    buffered = io.BytesIO()
-                    pil_img.save(buffered, format="PNG")
-                    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-                    
-                    options = {
-                        "analyze_style": True,
-                        "source_language": source_lang,
-                        "material_type": material_type
-                    }
-                    
-                    results = remote_client.dispatch_batch(
-                        task_type="ocr",
-                        model_id=consensus_expert_b,
-                        batch_payload=[{"image_data": img_str}],
-                        api_url=api_url,
-                        options=options
-                    )
-                    
-                    if results and results[0]:
-                        description = results[0].strip()
-                        GLib.idle_add(lambda: hint_entry.set_text(description))
-                    else:
-                        GLib.idle_add(lambda: hint_entry.set_text("No analysis returned."))
-                except Exception as ex:
-                    sys.stderr.write(f"[Scanlation OCR] Style analysis failed: {ex}\n")
-                    GLib.idle_add(lambda: hint_entry.set_text("Analysis failed."))
+                    for btn, crop_img, hint_entry in rows_to_analyze:
+                        GLib.idle_add(lambda b=btn: b.set_label("⏳"))
+                        
+                        try:
+                            pil_img = Image.fromarray(crop_img)
+                            buffered = io.BytesIO()
+                            pil_img.save(buffered, format="PNG")
+                            img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                            
+                            options = {
+                                "analyze_style": True,
+                                "source_language": source_lang,
+                                "material_type": material_type
+                            }
+                            
+                            results = remote_client.dispatch_batch(
+                                task_type="ocr",
+                                model_id=consensus_expert_b,
+                                batch_payload=[{"image_data": img_str}],
+                                api_url=api_url,
+                                options=options
+                            )
+                            
+                            if results and results[0]:
+                                description = results[0].strip()
+                                GLib.idle_add(lambda e=hint_entry, d=description: e.set_text(d))
+                            else:
+                                GLib.idle_add(lambda e=hint_entry: e.set_text("No analysis returned."))
+                        except Exception as ex:
+                            sys.stderr.write(f"[Scanlation OCR] Style analysis failed: {ex}\n")
+                            GLib.idle_add(lambda e=hint_entry: e.set_text("Analysis failed."))
+                        finally:
+                            GLib.idle_add(lambda b=btn: b.set_sensitive(True))
+                            GLib.idle_add(lambda b=btn: b.set_label("✨"))
                 finally:
-                    GLib.idle_add(lambda: btn.set_sensitive(True))
-                    GLib.idle_add(lambda: btn.set_label("✨"))
-                    
-                    def check_all_done():
-                        completed_count[0] += 1
-                        if completed_count[0] >= total_rows:
-                            btn_all.set_sensitive(True)
-                            btn_all.set_label("✨ Analyze All")
-                        return False
-                    GLib.idle_add(check_all_done)
-                    
-            for btn, crop_img, hint_entry in rows_to_analyze:
-                t = threading.Thread(target=row_worker, args=(btn, crop_img, hint_entry))
-                t.daemon = True
-                t.start()
+                    GLib.idle_add(lambda: btn_all.set_sensitive(True))
+                    GLib.idle_add(lambda: btn_all.set_label("✨ Analyze All"))
+            
+            t = threading.Thread(target=run_sequential_analysis)
+            t.daemon = True
+            t.start()
 
         desc_dialog = Gtk.Dialog(title="Configure Options Per Text Block", parent=None, flags=0)
         desc_dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
