@@ -228,12 +228,10 @@ def show_inpaint_dialog(procedure, config):
         if stored_arbiter in arb_ids:
             combo_arbiter.set_active_id(stored_arbiter)
         else:
-            if "DeepSeek-V4-Flash" in arb_ids:
-                combo_arbiter.set_active_id("DeepSeek-V4-Flash")
-            elif "DeepSeek" in arb_ids:
-                combo_arbiter.set_active_id("DeepSeek")
-            elif "olmOCR2_Q4" in arb_ids:
+            if "olmOCR2_Q4" in arb_ids:
                 combo_arbiter.set_active_id("olmOCR2_Q4")
+            elif "PaddleOCR_Manga" in arb_ids:
+                combo_arbiter.set_active_id("PaddleOCR_Manga")
             elif arb_ids:
                 combo_arbiter.set_active(0)
 
@@ -246,7 +244,7 @@ def show_inpaint_dialog(procedure, config):
         from modules import remote_client
         api_url = config.get_property("api-url") or "http://localhost:7890"
         inpaint_models = remote_client.get_available_models("inpaint", api_url)
-        arb_models = remote_client.get_available_models("arbitration", api_url)
+        arb_models = remote_client.get_available_models("ocr_expert", api_url)
         GLib.idle_add(populate_dropdowns, inpaint_models, arb_models)
 
     def update_model_dropdowns():
@@ -259,7 +257,7 @@ def show_inpaint_dialog(procedure, config):
         else:
             from modules import remote_client
             inpaint_models = remote_client.get_available_models("inpaint", "")
-            arb_models = remote_client.get_available_models("arbitration", "")
+            arb_models = remote_client.get_available_models("ocr_expert", "")
             populate_dropdowns(inpaint_models, arb_models)
 
     # Connect signals

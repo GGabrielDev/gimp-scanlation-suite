@@ -31,20 +31,17 @@ app.include_router(translate.router, prefix="/api/v1")
 app.include_router(detect.router, prefix="/api/v1")
 
 @app.get("/api/v1/models")
-def list_models(task_type: str = Query(..., description="The type of pipeline task, e.g. ocr, arbitration, translate, inpaint")):
+def list_models(task_type: str = Query(..., description="The capability tag or task type to filter by, e.g. ocr_expert, ocr_arbiter, translate, inpaint")):
     """
-    Returns the list of available models supported by the server for the specified task type.
+    Returns the list of available models supported by the server for the specified task type or capability tag.
     """
+    tag = task_type
     if task_type == "ocr":
-        filtered = [v for v in MODELS_CONFIG.values() if "ocr_expert" in v.tasks]
+        tag = "ocr_expert"
     elif task_type == "arbitration":
-        filtered = [v for v in MODELS_CONFIG.values() if "ocr_arbiter" in v.tasks]
-    elif task_type == "translate":
-        filtered = [v for v in MODELS_CONFIG.values() if "translate" in v.tasks]
-    elif task_type == "inpaint":
-        filtered = [v for v in MODELS_CONFIG.values() if "inpaint" in v.tasks]
-    else:
-        filtered = []
+        tag = "ocr_arbiter"
+        
+    filtered = [v for v in MODELS_CONFIG.values() if tag in v.tasks]
     return {"models": filtered}
 
 @app.post("/api/v1/dispatch")

@@ -66,13 +66,13 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
 
 
     # Bypass loading for API models
-    if model_id in MODELS_CONFIG and MODELS_CONFIG[model_id].get("handler_class") == "DeepSeekAPI":
+    if model_id in MODELS_CONFIG and MODELS_CONFIG[model_id].handler_class == "DeepSeekAPI":
         for other in list(_loaded_models.keys()):
             unload_model(other)
         return None
 
     # Load inpainting model via ONNX runtime
-    if model_id in MODELS_CONFIG and MODELS_CONFIG[model_id].get("handler_class") == "Inpainting":
+    if model_id in MODELS_CONFIG and MODELS_CONFIG[model_id].handler_class == "Inpainting":
         for other in list(_loaded_models.keys()):
             if other != model_id:
                 unload_model(other)
@@ -84,7 +84,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         import onnxruntime as ort
         from modules import model_manager
         cfg = MODELS_CONFIG[model_id]
-        model_path = model_manager.ensure_model_exists(cfg["repo"], cfg["file"], local_filename=cfg["local_name"])
+        model_path = model_manager.ensure_model_exists(cfg.download_info["repo"], cfg.download_info["file"], local_filename=cfg.download_info["local_name"])
         
         # Determine best available execution providers for ONNX Runtime
         providers = ["CPUExecutionProvider"]
@@ -103,7 +103,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
 
         
     # Load Diffusion inpainting model via HuggingFace diffusers
-    if model_id in MODELS_CONFIG and MODELS_CONFIG[model_id].get("handler_class") == "DiffusionInpainting":
+    if model_id in MODELS_CONFIG and MODELS_CONFIG[model_id].handler_class == "DiffusionInpainting":
         for other in list(_loaded_models.keys()):
             if other != model_id:
                 unload_model(other)
@@ -125,7 +125,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         try:
             try:
                 pipe = AutoPipelineForInpainting.from_pretrained(
-                    cfg["repo"],
+                    cfg.download_info["repo"],
                     torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                     safety_checker=None, # Uncensored support for SD 1.5 style models
                     requires_safety_checker=False,
@@ -134,7 +134,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
             except TypeError:
                 # Fallback for SDXL which does not accept safety_checker parameters
                 pipe = AutoPipelineForInpainting.from_pretrained(
-                    cfg["repo"],
+                    cfg.download_info["repo"],
                     torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                     low_cpu_mem_usage=True
                 )
@@ -165,7 +165,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         unload_model(other)
         
     cfg = MODELS_CONFIG[model_id]
-    if cfg.get("n_gpu_layers") == 0:
+    if cfg.n_gpu_layers == 0:
         force_cpu = True
 
     # If forcing CPU and model was loaded on GPU, discard it
@@ -179,15 +179,15 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
     from modules import model_manager
 
     sys.stderr.write(f"[Server Model Loader] Fetching weights for '{model_id}'...\n")
-    model_path = model_manager.ensure_model_exists(cfg["repo"], cfg["file"], local_filename=cfg["local_name"])
+    model_path = model_manager.ensure_model_exists(cfg.download_info["repo"], cfg.download_info["file"], local_filename=cfg.download_info["local_name"])
 
     # Bypass vision loading for TextOnly models
-    handler_class = cfg["handler_class"]
+    handler_class = cfg.handler_class
     if handler_class == "TextOnly":
         proj_path = None
         chat_handler = None
     else:
-        proj_path = model_manager.ensure_model_exists(cfg["projector_repo"], cfg["projector_file"], local_filename=cfg["local_projector_name"])
+        proj_path = model_manager.ensure_model_exists(cfg.download_info["projector_repo"], cfg.download_info["projector_file"], local_filename=cfg.download_info["local_projector_name"])
         sys.stderr.write(f"[Server Model Loader] Loading Vision Projector ({handler_class})...\n")
         if handler_class == "Qwen25VLChatHandler":
             from llama_cpp.llama_chat_format import Qwen25VLChatHandler
@@ -197,14 +197,14 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
             chat_handler = Llava15ChatHandler(clip_model_path=proj_path, verbose=False)
             chat_handler.DEFAULT_SYSTEM_MESSAGE = None
 
-    sys.stderr.write(f"[Server Model Loader] Initializing LLM context (n_ctx={cfg['n_ctx']})...\n")
+    sys.stderr.write(f"[Server Model Loader] Initializing LLM context (n_ctx={cfg.n_ctx})...\n")
     
     if force_cpu:
         sys.stderr.write("[Server Model Loader] Forcing CPU initialization (n_gpu_layers=0)...\n")
         llm = Llama(
             model_path=model_path,
             chat_handler=chat_handler,
-            n_ctx=cfg["n_ctx"],
+            n_ctx=cfg.n_ctx,
             logits_all=False,
             n_gpu_layers=0,
             verbose=False
@@ -212,12 +212,12 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
         _n_gpu_layers_used = 0
     else:
         try:
-            n_layers = cfg.get("n_gpu_layers", -1)
+            n_layers = cfg.n_gpu_layers if cfg.n_gpu_layers is not None else -1
             sys.stderr.write(f"[Server Model Loader] Trying GPU offloading (n_gpu_layers={n_layers})...\n")
             llm = Llama(
                 model_path=model_path,
                 chat_handler=chat_handler,
-                n_ctx=cfg["n_ctx"],
+                n_ctx=cfg.n_ctx,
                 logits_all=False,
                 n_gpu_layers=n_layers,
                 verbose=False
@@ -229,7 +229,7 @@ def get_or_load_model(model_id: str, force_cpu: bool = False):
             llm = Llama(
                 model_path=model_path,
                 chat_handler=chat_handler,
-                n_ctx=cfg["n_ctx"],
+                n_ctx=cfg.n_ctx,
                 logits_all=False,
                 n_gpu_layers=0,
                 verbose=False

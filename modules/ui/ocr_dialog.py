@@ -341,8 +341,8 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
     def load_remote_models_bg():
         from modules import remote_client
         api_url = config.get_property("api-url") or "http://localhost:7890"
-        ocr_models = remote_client.get_available_models("ocr", api_url)
-        arb_models = remote_client.get_available_models("arbitration", api_url)
+        ocr_models = remote_client.get_available_models("ocr_expert", api_url)
+        arb_models = remote_client.get_available_models("ocr_arbiter", api_url)
         GLib.idle_add(populate_dropdown, ocr_models, arb_models)
 
     def update_model_dropdown():
@@ -354,8 +354,8 @@ def show_ocr_dialog(procedure, config, image, bounding_boxes):
         else:
             # Local mode fallbacks using metadata registry
             from modules import remote_client
-            ocr_models = remote_client.get_available_models("ocr", "")
-            arb_models = remote_client.get_available_models("arbitration", "")
+            ocr_models = remote_client.get_available_models("ocr_expert", "")
+            arb_models = remote_client.get_available_models("ocr_arbiter", "")
             
             # Ensure "PaddleOCR" local engine option is available
             local_ocr = {"model_id": "PaddleOCR", "display_name": "PaddleOCR (Local)", "description": "Local GGUF model optimized for Japanese text extraction"}

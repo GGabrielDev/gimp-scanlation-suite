@@ -120,7 +120,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
     material_type = options.get("material_type") or "manga"
     total_start = time.time()
 
-    if MODELS_CONFIG.get(model, {}).get("handler_class") == "DeepSeekAPI":
+    if model in MODELS_CONFIG and MODELS_CONFIG[model].handler_class == "DeepSeekAPI":
         raw_ocr_model_id = "PaddleOCR_Manga" if options.get("analyze_style") else ("manga_ocr" if source_lang.lower() == "japanese" else "PaddleOCR_Manga")
         yield json.dumps({
             "type": "progress",
@@ -159,7 +159,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
     N = len(batch_payload)
 
     try:
-        if MODELS_CONFIG.get(model, {}).get("handler_class") == "DeepSeekAPI":
+        if model in MODELS_CONFIG and MODELS_CONFIG[model].handler_class == "DeepSeekAPI":
             # 1. Run local raw OCR or style analysis on all items sequentially
             raw_texts = []
             pass1_start = time.time()
@@ -300,7 +300,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                             "Content-Type": "application/json"
                         }
                         payload = {
-                            "model": MODELS_CONFIG.get(model, {}).get("model_name", "deepseek-chat"),
+                            "model": MODELS_CONFIG[model].model_name or "deepseek-chat",
                             "messages": [
                                 {"role": "system", "content": system_prompt},
                                 {"role": "user", "content": user_prompt}
@@ -395,7 +395,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                     system_text = "You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing."
                     user_text = f"You are a precise OCR engine. Transcribe all text in the image. Output ONLY the raw transcribed text. Do not translate, explain, or add conversational filler. If no text is visible, output nothing.\n\nPrompt: {prompt}"
 
-                if MODELS_CONFIG[model].get("handler_class") == "TextOnly":
+                if MODELS_CONFIG[model].handler_class == "TextOnly":
                     messages = [
                         {
                             "role": "system",
@@ -406,7 +406,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
                             "content": "OCR:" if options.get("analyze_style") else prompt
                         }
                     ]
-                elif MODELS_CONFIG[model].get("handler_class") == "Llava15ChatHandler":
+                elif MODELS_CONFIG[model].handler_class == "Llava15ChatHandler":
                     messages = [
                         {
                             "role": "user",
@@ -461,7 +461,7 @@ def run_single_ocr_generator(model: str, batch_payload: list, options: dict):
         }) + "\n"
         yield json.dumps({"type": "result", "results": results}) + "\n"
     finally:
-        if MODELS_CONFIG.get(model, {}).get("handler_class") == "DeepSeekAPI":
+        if model in MODELS_CONFIG and MODELS_CONFIG[model].handler_class == "DeepSeekAPI":
             unload_model(raw_ocr_model_id)
         else:
             unload_model(model)
@@ -548,7 +548,7 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
     # --- PASS 2: Expert B ---
     results_b = []
     pass2_start = time.time()
-    is_vision_model = MODELS_CONFIG.get(expert_b_model_id, {}).get("handler_class") not in ["TextOnly", "DeepSeekAPI"]
+    is_vision_model = expert_b_model_id in MODELS_CONFIG and MODELS_CONFIG[expert_b_model_id].handler_class not in ["TextOnly", "DeepSeekAPI"]
     if not is_vision_model:
         expert_b_model_id = "PaddleOCR_Manga"
     try:
@@ -621,7 +621,7 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
         }) + "\n"
         arbiter = get_or_load_model(arbiter_model_id)
 
-        if MODELS_CONFIG.get(arbiter_model_id, {}).get("handler_class") == "DeepSeekAPI":
+        if arbiter_model_id in MODELS_CONFIG and MODELS_CONFIG[arbiter_model_id].handler_class == "DeepSeekAPI":
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             api_key = os.environ.get("DEEPSEEK_API_KEY", "")
@@ -677,7 +677,7 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
                         "Content-Type": "application/json"
                     }
                     payload = {
-                        "model": MODELS_CONFIG.get(arbiter_model_id, {}).get("model_name", "deepseek-chat"),
+                        "model": MODELS_CONFIG[arbiter_model_id].model_name or "deepseek-chat",
                         "messages": [
                             {"role": "system", "content": system_instruction},
                             {"role": "user", "content": user_prompt}
@@ -810,12 +810,12 @@ def run_ensemble_ocr_generator(model: str, batch_payload: list, options: dict):
 
                     arbiter.reset()
                     
-                    if MODELS_CONFIG[arbiter_model_id].get("handler_class") == "TextOnly":
+                    if MODELS_CONFIG[arbiter_model_id].handler_class == "TextOnly":
                         messages = [
                             {"role": "system", "content": system_instruction},
                             {"role": "user", "content": user_prompt}
                         ]
-                    elif MODELS_CONFIG[arbiter_model_id].get("handler_class") == "Llava15ChatHandler":
+                    elif MODELS_CONFIG[arbiter_model_id].handler_class == "Llava15ChatHandler":
                         user_text = f"{system_instruction}\n\n{user_prompt}"
                         messages = [
                             {

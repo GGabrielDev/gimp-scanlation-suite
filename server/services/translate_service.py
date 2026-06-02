@@ -15,7 +15,7 @@ def run_translate_generator(model: str, batch_payload: list, options: dict):
     try:
         yield json.dumps({"type": "progress", "percentage": 0.0, "message": "Loading translation model..."}) + "\n"
         model_cfg = MODELS_CONFIG[model]
-        handler_class = model_cfg.get("handler_class")
+        handler_class = model_cfg.handler_class
         
         # Fetch translation options
         src_lang = options.get("source_language") or "Japanese"
@@ -113,14 +113,14 @@ def run_translate_generator(model: str, batch_payload: list, options: dict):
             api_base = os.environ.get("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
             api_base = api_base.rstrip("/")
             url = f"{api_base}/chat/completions"
-
+ 
             headers = {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
             }
             
             payload = {
-                "model": model_cfg.get("model_name", "deepseek-chat"),
+                "model": model_cfg.model_name or "deepseek-chat",
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}

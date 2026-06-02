@@ -67,15 +67,14 @@ def get_available_models(task_type, api_url):
                 for m in fallback_data:
                     _metadata_cache[m["model_id"]] = m
                 
-                # Filter based on task_type
+                # Normalize task_type to capability tags for robustness
+                tag = task_type
                 if task_type == "ocr":
-                    fallback_models = [m for m in fallback_data if "ocr_expert" in m.get("tasks", [])]
+                    tag = "ocr_expert"
                 elif task_type == "arbitration":
-                    fallback_models = [m for m in fallback_data if "ocr_arbiter" in m.get("tasks", [])]
-                elif task_type == "translate":
-                    fallback_models = [m for m in fallback_data if "translate" in m.get("tasks", [])]
-                elif task_type == "inpaint":
-                    fallback_models = [m for m in fallback_data if "inpaint" in m.get("tasks", [])]
+                    tag = "ocr_arbiter"
+                
+                fallback_models = [m for m in fallback_data if tag in m.get("tasks", [])]
         except Exception as err:
             sys.stderr.write(f"[Remote Client] Failed to load models_fallback.json: {err}\n")
             

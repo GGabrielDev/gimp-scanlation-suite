@@ -127,7 +127,7 @@ def run_inpaint_generator(model: str, batch_payload: list, options: dict):
     try:
         yield json.dumps({"type": "progress", "percentage": 0.0, "message": "Loading inpainting model..."}) + "\n"
         
-        is_diffusion = MODELS_CONFIG.get(model, {}).get("handler_class") == "DiffusionInpainting"
+        is_diffusion = model in MODELS_CONFIG and MODELS_CONFIG[model].handler_class == "DiffusionInpainting"
         if not is_diffusion:
             session = get_or_load_model(model)
         else:

@@ -50,7 +50,6 @@ def load_dotenv():
 load_dotenv()
 
 # Model Configuration Registry
-# Model Configuration Registry
 class ModelMetadata(BaseModel):
     model_id: str
     display_name: str
@@ -62,24 +61,6 @@ class ModelMetadata(BaseModel):
     n_ctx: Optional[int] = None
     n_gpu_layers: Optional[int] = None
     model_name: Optional[str] = None
-
-    def get(self, key: str, default: Any = None) -> Any:
-        if hasattr(self, key):
-            val = getattr(self, key)
-            if val is not None:
-                return val
-        if self.download_info and key in self.download_info:
-            return self.download_info[key]
-        return default
-
-    def __getitem__(self, key: str) -> Any:
-        if hasattr(self, key):
-            val = getattr(self, key)
-            if val is not None:
-                return val
-        if self.download_info and key in self.download_info:
-            return self.download_info[key]
-        raise KeyError(key)
 
 MODELS_CONFIG = {
     "PaddleOCR_Manga": ModelMetadata(
